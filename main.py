@@ -3,10 +3,11 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
 
+# ── App setup ──────────────────────────────────────────────
 app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-# System prompt — this is your AI doctor's instructions
+# ── AI system prompt ───────────────────────────────────────
 SYSTEM_PROMPT = """Tu es WaziHealth, un assistant de triage médical bienveillant 
 et professionnel qui aide les populations d'Afrique de l'Ouest francophone.
 
@@ -21,31 +22,33 @@ Règles importantes:
 - Toujours répondre en français
 - Jamais poser plus de 3 questions avant de donner une orientation
 - Toujours terminer par: "Ceci n'est pas un avis médical professionnel."
-- Si l'utilisateur mentionne: douleur thoracique, difficulté à respirer, 
-  perte de conscience, saignement grave → répondre ROUGE immédiatement
-- Être chaleureux, rassurant et simple dans le langage
 - Tenir compte du contexte médical ouest-africain (paludisme, typhoïde, etc.)"""
 
-@app.route("/", methods=["GET"])
-def home():
-    return "WaziHealth est en ligne! 🏥", 200
+# ── Safety layer ───────────────────────────────────────────
+EMERGENCY_KEYWORDS = [
+    "douleur thoracique", "douleur poitrine", "mal à la poitrine",
+    "difficulté à respirer", "je ne respire pas", "du mal à respirer",
+    "inconscient", "perte de connaissance", "évanoui",
+    "saignement abondant", "beaucoup de sang", "hémorragie",
+    "convulsions", "crise", "paralysé", "ne bouge plus",
+    "overdose", "empoisonnement", "avalé quelque chose"
+]
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    incoming_message = request.form.get("Body", "").strip()
-    sender = request.form.get("From", "")
+EMERGENCY_RESPONSE = """🔴 URGENCE MÉDICALE
 
-    print(f"📩 Message de {sender}: {incoming_message}")
+Ce que vous décrivez nécessite une aide médicale IMMÉDIATE.
 
-    # Get AI response
-    ai_response = get_ai_response(incoming_message)
+👉 Appelez le 15 (SAMU) ou rendez-vous aux urgences les plus proches MAINTENANT.
 
-    # Send reply via Twilio
-    response = MessagingResponse()
-    response.message(ai_response)
+Ne restez pas seul(e). Demandez à quelqu'un de vous accompagner.
 
-    return str(response)
+*Ceci n'est pas un avis médical professionnel.*"""
 
+def is_emergency(message):
+    message_lower = message.lower()
+    return any(keyword in message_lower for keyword in EMERGENCY_KEYWORDS)
+
+# ── AI response function ───────────────────────────────────
 def get_ai_response(user_message):
     try:
         completion = client.chat.completions.create(
@@ -60,11 +63,37 @@ def get_ai_response(user_message):
         return completion.choices[0].message.content
 
     except Exception as e:
-        print(f"OpenAI error: {e}")
+        print(f"❌ OpenAI error: {type(e).__name__}: {e}")
         return (
             "Désolé, je rencontre un problème technique. "
             "Veuillez réessayer dans quelques instants. 🙏"
         )
 
+# ── Routes ─────────────────────────────────────────────────
+@app.route("/", methods=["GET"])
+def home():
+    return "WaziHealth est en ligne! 🏥", 200
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    incoming_message = request.form.get("Body", "").strip()
+    sender = request.form.get("From", "")
+
+    print(f"📩 Message de {sender}: {incoming_message}")
+
+    # Safety check FIRST — before any AI call
+    if is_emergency(incoming_message):
+        print(f"🚨 URGENCE détectée de {sender}")
+        response = MessagingResponse()
+        response.message(EMERGENCY_RESPONSE)
+        return str(response)
+
+    # Normal AI triage
+    ai_response = get_ai_response(incoming_message)
+    response = MessagingResponse()
+    response.message(ai_response)
+    return str(response)
+
+# ── Run ────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
