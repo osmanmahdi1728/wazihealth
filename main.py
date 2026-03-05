@@ -7,60 +7,96 @@ from openai import OpenAI
 app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
+# ── Conversation memory ────────────────────────────────────
+conversations = {}
+MAX_HISTORY = 10
+
 # ── AI system prompt ───────────────────────────────────────
-SYSTEM_PROMPT = """Tu es WaziHealth, un assistant de triage médical bienveillant 
-et professionnel qui aide les populations d'Afrique de l'Ouest francophone.
+SYSTEM_PROMPT = """Tu es WaziHealth, un assistant de triage médical 
+bienveillant pour l'Afrique de l'Ouest francophone.
 
-Ton rôle:
-- Poser des questions claires pour comprendre les symptômes
-- Donner une orientation de triage en 3 niveaux:
-  🟢 VERT: Soins à domicile — donne des conseils simples
-  🟡 JAUNE: Pharmacie ou consultation dans les 24h
-  🔴 ROUGE: Urgence — consulter un médecin immédiatement
+Pour chaque situation tu évalues le niveau d'urgence toi-même:
 
-Règles importantes:
-- Toujours répondre en français
-- Jamais poser plus de 3 questions avant de donner une orientation
-- Toujours terminer par: "Ceci n'est pas un avis médical professionnel."
-- Tenir compte du contexte médical ouest-africain (paludisme, typhoïde, etc.)"""
+🟢 VERT — Soins à domicile
+→ Symptômes légers, pas de danger immédiat
+→ Donne des conseils pratiques simples
 
-# ── Safety layer ───────────────────────────────────────────
-EMERGENCY_KEYWORDS = [
-    "douleur thoracique", "douleur poitrine", "mal à la poitrine",
-    "difficulté à respirer", "je ne respire pas", "du mal à respirer",
-    "inconscient", "perte de connaissance", "évanoui",
-    "saignement abondant", "beaucoup de sang", "hémorragie",
-    "convulsions", "crise", "paralysé", "ne bouge plus",
-    "overdose", "empoisonnement", "avalé quelque chose"
+🟡 JAUNE — Pharmacie ou médecin dans les 24h  
+→ Symptômes modérés qui nécessitent attention
+→ Recommande une consultation ou un test
+
+🔴 ROUGE — URGENCE, soins immédiats requis
+→ Symptômes graves ou potentiellement mortels
+→ Envoie immédiatement aux urgences
+→ Exemples: douleur thoracique, difficulté à respirer,
+  perte de connaissance, saignement grave, convulsions,
+  fièvre très élevée chez un nourrisson, symptômes d'AVC
+
+Processus:
+1. Si les symptômes sont clairement une urgence → ROUGE immédiatement
+2. Sinon → pose maximum 2 questions pour clarifier
+3. Après les questions → donne ton évaluation avec le niveau
+
+Format de réponse pour le triage final:
+[niveau emoji] [niveau texte]
+[explication courte]
+[action recommandée]
+
+Ceci n'est pas un avis médical professionnel.
+
+Contexte: tiens compte des maladies fréquentes en Afrique de l'Ouest 
+(paludisme, typhoïde, méningite, choléra, dengue)."""
+
+# ── Hard safety layer — obvious emergencies only ───────────
+CRITICAL_KEYWORDS = [
+    "ne respire pas", "arrêt cardiaque", "inconscient",
+    "ne répond plus", "overdose", "empoisonnement"
 ]
 
-EMERGENCY_RESPONSE = """🔴 URGENCE MÉDICALE
+EMERGENCY_RESPONSE = """🔴 URGENCE MÉDICALE CRITIQUE
 
-Ce que vous décrivez nécessite une aide médicale IMMÉDIATE.
+Appelez le 15 (SAMU) ou les urgences IMMÉDIATEMENT.
 
-👉 Appelez le 15 (SAMU) ou rendez-vous aux urgences les plus proches MAINTENANT.
-
-Ne restez pas seul(e). Demandez à quelqu'un de vous accompagner.
+Ne restez pas seul(e).
 
 *Ceci n'est pas un avis médical professionnel.*"""
 
-def is_emergency(message):
+def is_critical(message):
     message_lower = message.lower()
-    return any(keyword in message_lower for keyword in EMERGENCY_KEYWORDS)
+    return any(keyword in message_lower for keyword in CRITICAL_KEYWORDS)
 
-# ── AI response function ───────────────────────────────────
-def get_ai_response(user_message):
+# ── AI response with memory ────────────────────────────────
+def get_ai_response(sender, user_message):
     try:
+        if sender not in conversations:
+            conversations[sender] = []
+
+        conversations[sender].append({
+            "role": "user",
+            "content": user_message
+        })
+
+        if len(conversations[sender]) > MAX_HISTORY:
+            conversations[sender] = conversations[sender][-MAX_HISTORY:]
+
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages += conversations[sender]
+
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message}
-            ],
-            max_tokens=300,
-            temperature=0.3
+            messages=messages,
+            max_tokens=350,
+            temperature=0.2  # lower = more consistent medical responses
         )
-        return completion.choices[0].message.content
+
+        ai_reply = completion.choices[0].message.content
+
+        conversations[sender].append({
+            "role": "assistant",
+            "content": ai_reply
+        })
+
+        return ai_reply
 
     except Exception as e:
         print(f"❌ OpenAI error: {type(e).__name__}: {e}")
@@ -81,19 +117,20 @@ def webhook():
 
     print(f"📩 Message de {sender}: {incoming_message}")
 
-    # Safety check FIRST — before any AI call
-    if is_emergency(incoming_message):
-        print(f"🚨 URGENCE détectée de {sender}")
+    # Layer 1 — instant critical emergency bypass
+    if is_critical(incoming_message):
+        print(f"🚨 CRITIQUE détecté de {sender}")
+        conversations.pop(sender, None)
         response = MessagingResponse()
         response.message(EMERGENCY_RESPONSE)
         return str(response)
 
-    # Normal AI triage
-    ai_response = get_ai_response(incoming_message)
+    # Layer 2 — AI evaluates everything else including urgency
+    ai_response = get_ai_response(sender, incoming_message)
+    print(f"🤖 Réponse AI: {ai_response[:100]}...")
     response = MessagingResponse()
     response.message(ai_response)
     return str(response)
 
-# ── Run ────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
