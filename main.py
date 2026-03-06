@@ -1,23 +1,30 @@
 import os
 import hashlib
+import tempfile
+import requests
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client as TwilioClient
 from openai import OpenAI
 from supabase import create_client
 
 # ── App setup ──────────────────────────────────────────────
 app = Flask(__name__)
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 supabase = create_client(
     os.environ.get("SUPABASE_URL"),
     os.environ.get("SUPABASE_KEY")
 )
+twilio_client = TwilioClient(
+    os.environ.get("TWILIO_ACCOUNT_SID"),
+    os.environ.get("TWILIO_AUTH_TOKEN")
+)
 
-# ── Conversation memory (in-RAM) ───────────────────────────
+# ── Conversation memory ────────────────────────────────────
 conversations = {}
 MAX_HISTORY = 10
 
-# ── AI system prompt ───────────────────────────────────────
+# ── System prompt ──────────────────────────────────────────
 SYSTEM_PROMPT = """Tu es WaziHealth, un assistant de triage médical 
 bienveillant pour l'Afrique de l'Ouest francophone.
 
@@ -43,26 +50,22 @@ Tu évalues le niveau d'urgence et structures TOUJOURS ta réponse finale ainsi:
 Niveaux d'urgence:
 🟢 VERT — Soins à domicile
 → Symptômes légers, pas de danger immédiat
-→ Donne des conseils pratiques simples
 
 🟡 JAUNE — Pharmacie ou médecin dans les 24h
 → Symptômes modérés qui nécessitent attention
-→ Recommande une consultation ou un test
 
 🔴 ROUGE — URGENCE, soins immédiats requis
 → Symptômes graves ou potentiellement mortels
-→ Dirige immédiatement vers les urgences
 
-Règles importantes:
+Règles:
 - Pendant les questions de suivi → pas de format structuré, juste la question
 - Format structuré UNIQUEMENT pour la réponse finale de triage
 - Maximum 2 questions avant de donner la réponse finale
-- Tenir compte des maladies fréquentes en Afrique de l'Ouest:
-  paludisme, typhoïde, méningite, choléra, dengue
+- Tenir compte des maladies fréquentes: paludisme, typhoïde, méningite, dengue
 - Si urgence évidente → ROUGE immédiatement sans questions
 - Toujours répondre en français"""
 
-# ── Critical emergency keywords ────────────────────────────
+# ── Emergency constants ────────────────────────────────────
 CRITICAL_KEYWORDS = [
     "ne respire pas", "arrêt cardiaque", "inconscient",
     "ne répond plus", "overdose", "empoisonnement"
@@ -89,10 +92,9 @@ Merci de votre confiance. 🙏"""
 
 # ── Helper: anonymize phone number ────────────────────────
 def hash_sender(sender):
-    """Hash phone number for privacy — we never store real numbers."""
     return hashlib.sha256(sender.encode()).hexdigest()[:16]
 
-# ── Helper: detect triage level from AI response ──────────
+# ── Helper: detect triage level ───────────────────────────
 def extract_triage_level(ai_response):
     response_upper = ai_response.upper()
     if "ROUGE" in response_upper or "🔴" in ai_response:
@@ -103,7 +105,7 @@ def extract_triage_level(ai_response):
         return "GREEN"
     return "PENDING"
 
-# ── Helper: log message to Supabase ───────────────────────
+# ── Helper: log to Supabase ───────────────────────────────
 def log_to_db(sender, role, content, triage_level=None, is_emergency=False):
     try:
         supabase.table("consultations").insert({
@@ -117,9 +119,8 @@ def log_to_db(sender, role, content, triage_level=None, is_emergency=False):
     except Exception as e:
         print(f"⚠️ DB log error: {e}")
 
-# ── Helper: check if user is requesting human handoff ─────
+# ── Helper: human handoff check ───────────────────────────
 def is_handoff_request(sender, message):
-    """Returns True if user said OUI after bot offered human agent."""
     if message.strip().upper() not in ["OUI", "OUI.", "OUI!"]:
         return False
     if sender not in conversations or len(conversations[sender]) == 0:
@@ -127,10 +128,45 @@ def is_handoff_request(sender, message):
     last_bot_message = conversations[sender][-1]["content"]
     return "agent humain" in last_bot_message.lower()
 
-# ── Helper: check for critical emergency ──────────────────
+# ── Helper: critical emergency check ──────────────────────
 def is_critical(message):
     message_lower = message.lower()
     return any(keyword in message_lower for keyword in CRITICAL_KEYWORDS)
+
+# ── Helper: transcribe voice note ─────────────────────────
+def transcribe_audio(media_url):
+    """Download WhatsApp voice note and transcribe with Whisper."""
+    try:
+        # Download audio using Twilio credentials
+        auth = (
+            os.environ.get("TWILIO_ACCOUNT_SID"),
+            os.environ.get("TWILIO_AUTH_TOKEN")
+        )
+        audio_response = requests.get(media_url, auth=auth, timeout=30)
+
+        if audio_response.status_code != 200:
+            print(f"⚠️ Audio download failed: {audio_response.status_code}")
+            return None
+
+        # Save to temp file and transcribe
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp.write(audio_response.content)
+            tmp_path = tmp.name
+
+        with open(tmp_path, "rb") as audio_file:
+            transcription = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="fr"  # French — change to None for auto-detect
+            )
+
+        transcript = transcription.text
+        print(f"🎤 Transcription: {transcript}")
+        return transcript
+
+    except Exception as e:
+        print(f"❌ Transcription error: {e}")
+        return None
 
 # ── AI response with memory ────────────────────────────────
 def get_ai_response(sender, user_message):
@@ -149,7 +185,7 @@ def get_ai_response(sender, user_message):
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages += conversations[sender]
 
-        completion = client.chat.completions.create(
+        completion = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
             max_tokens=400,
@@ -179,16 +215,58 @@ def home():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    incoming_message = request.form.get("Body", "").strip()
-    sender = request.form.get("From", "")
+    sender        = request.form.get("From", "")
+    incoming_text = request.form.get("Body", "").strip()
+    num_media     = int(request.form.get("NumMedia", 0))
 
-    print(f"📩 Message de {hash_sender(sender)}: {incoming_message}")
+    # ── Handle voice note ───────────────────────────────────
+    if num_media > 0:
+        media_url         = request.form.get("MediaUrl0", "")
+        media_content_type = request.form.get("MediaContentType0", "")
 
-    # Log user message to database
-    log_to_db(sender, "user", incoming_message)
+        print(f"🎤 Voice note reçu de {hash_sender(sender)}")
+        print(f"   Type: {media_content_type}")
 
-    # ── Layer 1: Critical emergency bypass ─────────────────
-    if is_critical(incoming_message):
+        if "audio" in media_content_type:
+            transcript = transcribe_audio(media_url)
+
+            if transcript:
+                incoming_text = transcript
+                print(f"✅ Transcription réussie: {incoming_text}")
+            else:
+                # Transcription failed — ask user to type
+                response = MessagingResponse()
+                response.message(
+                    "🎤 Je n'ai pas pu comprendre votre message vocal.\n\n"
+                    "Pouvez-vous décrire vos symptômes par écrit? 🙏"
+                )
+                return str(response)
+        else:
+            # Not an audio file (image, video, etc.)
+            response = MessagingResponse()
+            response.message(
+                "Je peux recevoir des messages vocaux et texte.\n"
+                "Décrivez vos symptômes en texte ou en message vocal. 🎤"
+            )
+            return str(response)
+
+    # ── No message content at all ───────────────────────────
+    if not incoming_text:
+        response = MessagingResponse()
+        response.message(
+            "👋 Bonjour! Je suis WaziHealth.\n\n"
+            "Décrivez vos symptômes en texte ou envoyez "
+            "un message vocal 🎤 et je vous aiderai."
+        )
+        return str(response)
+
+    print(f"📩 Message de {hash_sender(sender)}: {incoming_text}")
+
+    # Log user message
+    log_to_db(sender, "user", incoming_text)
+
+    # ── Layer 1: Critical emergency ─────────────────────────
+    if is_critical(incoming_text):
         print(f"🚨 CRITIQUE détecté")
         log_to_db(sender, "assistant", EMERGENCY_RESPONSE,
                   triage_level="RED", is_emergency=True)
@@ -197,9 +275,9 @@ def webhook():
         response.message(EMERGENCY_RESPONSE)
         return str(response)
 
-    # ── Layer 2: Human handoff request ─────────────────────
-    if is_handoff_request(sender, incoming_message):
-        print(f"👤 Handoff demandé par {hash_sender(sender)}")
+    # ── Layer 2: Human handoff ──────────────────────────────
+    if is_handoff_request(sender, incoming_text):
+        print(f"👤 Handoff demandé")
         log_to_db(sender, "system", "HUMAN_HANDOFF_REQUESTED",
                   triage_level="HANDOFF")
         conversations.pop(sender, None)
@@ -207,13 +285,12 @@ def webhook():
         response.message(HANDOFF_RESPONSE)
         return str(response)
 
-    # ── Layer 3: Normal AI triage ───────────────────────────
-    ai_response = get_ai_response(sender, incoming_message)
+    # ── Layer 3: AI triage ──────────────────────────────────
+    ai_response  = get_ai_response(sender, incoming_text)
     triage_level = extract_triage_level(ai_response)
 
     log_to_db(sender, "assistant", ai_response, triage_level=triage_level)
-
-    print(f"🤖 Triage: {triage_level} | {ai_response[:80]}...")
+    print(f"🤖 Triage: {triage_level}")
 
     response = MessagingResponse()
     response.message(ai_response)
