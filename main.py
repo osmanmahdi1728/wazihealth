@@ -42,7 +42,7 @@ Pose UNE seule question combinée:
 8️⃣ Autre — décrivez en un mot"
 
 ━━━━━━━━━━━━━━━━━━━━━━
-ÉCHANGE 2 — 2-3 signes visibles ou ressentis
+ÉCHANGE 2 — Signes visibles ou ressentis
 ━━━━━━━━━━━━━━━━━━━━━━
 Selon la réponse, pose UNE question avec 4-5 choix max:
 
@@ -79,18 +79,17 @@ Si PEAU:
 5️⃣ Taches blanches (bouche ou peau)"
 
 ━━━━━━━━━━━━━━━━━━━━━━
-ÉCHANGE 3 — Profil (1 question rapide)
+ÉCHANGE 3 — Profil rapide
 ━━━━━━━━━━━━━━━━━━━━━━
 "Dernière question:
 • C'est pour qui? Bébé / Enfant / Adulte / Personne âgée
 • Femme enceinte? Oui / Non
-• Voyage récent en zone rurale? Oui / Non"
+• Voyage récent en zone rurale? Oui / Non
+• Autres malades autour de vous? Oui / Non"
 
 ━━━━━━━━━━━━━━━━━━━━━━
-ÉCHANGE 4 — DIAGNOSTIC FINAL (toujours après échange 3)
+ÉCHANGE 4 — DIAGNOSTIC FINAL
 ━━━━━━━━━━━━━━━━━━━━━━
-Format exact:
-
 [emoji niveau] [NIVEAU] — [titre simple]
 
 🔍 Ce que ça ressemble à: [explication simple, 1-2 phrases]
@@ -175,92 +174,92 @@ Merci 🙏"""
 
 RESOURCES = {
     "paludisme": {
-        "video":     "https://youtube.com/watch?v=7k8KfqUkMDU",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/malaria",
+        "video":     "<https://youtube.com/watch?v=7k8KfqUkMDU>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/malaria>",
         "aliments":  "🥗 À manger:\n   • Bouillon de poulet\n   • Riz blanc\n   • Banane\n   • Eau de coco",
         "hydration": "💧 3L d'eau par jour"
     },
     "paludisme_enfant": {
-        "video":     "https://youtube.com/watch?v=7k8KfqUkMDU",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/malaria",
+        "video":     "<https://youtube.com/watch?v=7k8KfqUkMDU>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/malaria>",
         "aliments":  "🥗 Pour enfant:\n   • Lait maternel si nourrisson\n   • Bouillon léger\n   • Eau de coco",
         "hydration": "💧 SRO si diarrhée — pharmacie"
     },
     "typhoide": {
-        "video":     "https://youtube.com/watch?v=3vMxVPcKDlY",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/typhoid",
+        "video":     "<https://youtube.com/watch?v=3vMxVPcKDlY>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/typhoid>",
         "aliments":  "🥗 À manger:\n   • Soupe légère\n   • Yaourt nature\n   • Pomme de terre cuite\n   • ❌ Pas d'épices",
         "hydration": "💧 SRO en pharmacie"
     },
     "diarrhee": {
-        "video":     "https://youtube.com/watch?v=W0JQPMDPkBQ",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/diarrhoeal-disease",
+        "video":     "<https://youtube.com/watch?v=W0JQPMDPkBQ>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/diarrhoeal-disease>",
         "aliments":  "🥗 À manger:\n   • Riz blanc\n   • Banane\n   • Pain grillé\n   • ❌ Pas de lait ni friture",
         "hydration": "💧 SRO — 1 sachet dans 1L d'eau"
     },
     "meningite": {
-        "video":     "https://youtube.com/watch?v=MNhkTMUCHHw",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/meningitis",
+        "video":     "<https://youtube.com/watch?v=MNhkTMUCHHw>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/meningitis>",
         "aliments":  "🥗 Urgence — allez à l'hôpital",
         "hydration": "💧 Perfusion à l'hôpital"
     },
     "dengue": {
-        "video":     "https://youtube.com/watch?v=k3EQCn9GPCU",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/dengue-and-severe-dengue",
+        "video":     "<https://youtube.com/watch?v=k3EQCn9GPCU>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/dengue-and-severe-dengue>",
         "aliments":  "🥗 À manger:\n   • Jus de papaye\n   • Soupe\n   • Fruits frais\n   • ❌ Pas d'aspirine",
         "hydration": "💧 3-4L d'eau ou jus par jour"
     },
     "grippe": {
-        "video":     "https://youtube.com/watch?v=OvNNsR5FXKU",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/influenza-(seasonal)",
+        "video":     "<https://youtube.com/watch?v=OvNNsR5FXKU>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/influenza-(seasonal>)",
         "aliments":  "🥗 À manger:\n   • Soupe chaude\n   • Miel + citron\n   • Gingembre\n   • Bouillon",
         "hydration": "💧 Tisanes + 2L d'eau"
     },
     "deshydratation": {
-        "video":     "https://youtube.com/watch?v=9iMGFqMmUFs",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/diarrhoeal-disease",
+        "video":     "<https://youtube.com/watch?v=9iMGFqMmUFs>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/diarrhoeal-disease>",
         "aliments":  "🥗 À boire:\n   • Eau de coco\n   • Bouillon salé\n   • Pastèque, concombre",
         "hydration": "💧 SRO immédiatement"
     },
     "cholera": {
-        "video":     "https://youtube.com/watch?v=YFKQ4R7MYXI",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/cholera",
+        "video":     "<https://youtube.com/watch?v=YFKQ4R7MYXI>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/cholera>",
         "aliments":  "🥗 Urgence — SRO immédiatement",
         "hydration": "💧 SRO en continu — centre de santé"
     },
     "tuberculose": {
-        "video":     "https://youtube.com/watch?v=K4eFSbFhRkE",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/tuberculosis",
+        "video":     "<https://youtube.com/watch?v=K4eFSbFhRkE>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/tuberculosis>",
         "aliments":  "🥗 À manger:\n   • Œufs\n   • Poisson\n   • Légumes frais\n   • Fruits",
         "hydration": "💧 2L d'eau par jour"
     },
     "infection_urinaire": {
-        "video":     "https://youtube.com/watch?v=QqSaIFp3k0Q",
-        "info":      "https://www.who.int/fr/",
+        "video":     "<https://youtube.com/watch?v=QqSaIFp3k0Q>",
+        "info":      "<https://www.who.int/fr/>",
         "aliments":  "🥗 À manger:\n   • Yaourt nature\n   • ❌ Pas d'alcool ni café",
         "hydration": "💧 3L d'eau minimum"
     },
     "hypertension": {
-        "video":     "https://youtube.com/watch?v=ab5p3B5XJBE",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/hypertension",
+        "video":     "<https://youtube.com/watch?v=ab5p3B5XJBE>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/hypertension>",
         "aliments":  "🥗 À manger:\n   • Légumes frais\n   • Banane\n   • Poisson\n   • ❌ Pas de sel ni friture",
         "hydration": "💧 2L d'eau par jour"
     },
     "diabete": {
-        "video":     "https://youtube.com/watch?v=9OvSIFZMfmI",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/diabetes",
+        "video":     "<https://youtube.com/watch?v=9OvSIFZMfmI>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/diabetes>",
         "aliments":  "🥗 À manger:\n   • Légumes verts\n   • Poisson grillé\n   • ❌ Pas de sucre ni sodas",
         "hydration": "💧 Eau uniquement"
     },
     "malnutrition": {
-        "video":     "https://youtube.com/watch?v=GlxiUkEFtL4",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/malnutrition",
+        "video":     "<https://youtube.com/watch?v=GlxiUkEFtL4>",
+        "info":      "<https://www.who.int/fr/news-room/fact-sheets/detail/malnutrition>",
         "aliments":  "🥗 À manger:\n   • Niébé, lentilles\n   • Œufs\n   • Poisson\n   • Arachides",
         "hydration": "💧 Eau propre — 2L par jour"
     },
     "conjonctivite": {
-        "video":     "https://youtube.com/watch?v=xMEMWKHHcCk",
-        "info":      "https://www.who.int/fr/",
+        "video":     "<https://youtube.com/watch?v=xMEMWKHHcCk>",
+        "info":      "<https://www.who.int/fr/>",
         "aliments":  "🥗 Lavez les mains souvent\n   • ❌ Ne frottez pas les yeux",
         "hydration": "💧 Normal"
     },
@@ -347,15 +346,12 @@ def analyze_image(media_url):
         if res.status_code != 200:
             print(f"❌ Échec téléchargement image: {res.status_code}")
             return None
-
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp.write(res.content)
             tmp_path = tmp.name
-
         upload = cloudinary.uploader.upload(tmp_path, folder="wazihealth/images")
         public_url = upload["secure_url"]
         print(f"☁️ Image uploadée: {public_url}")
-
         response = openai_client.chat.completions.create(
             model="gpt-4o",
             messages=[{
@@ -382,15 +378,13 @@ def analyze_image(media_url):
             }],
             max_tokens=250
         )
-
         description = response.choices[0].message.content
         print(f"🖼️ Hypothèse: {description}")
         return description
-
     except Exception as e:
         print(f"❌ Image error: {type(e).__name__}: {e}")
         return None
-        
+
 def transcribe_audio(media_url):
     try:
         print("⬇️ Téléchargement audio...")
@@ -402,7 +396,9 @@ def transcribe_audio(media_url):
             tmp.write(res.content)
             tmp_path = tmp.name
         with open(tmp_path, "rb") as f:
-            result = openai_client.audio.transcriptions.create(model="whisper-1", file=f, language="fr")
+            result = openai_client.audio.transcriptions.create(
+                model="whisper-1", file=f, language="fr"
+            )
         print(f"🎤 Transcription: {result.text}")
         return result.text
     except Exception as e:
@@ -420,11 +416,15 @@ def send_audio_async(sender, ai_response):
             ],
             max_tokens=100
         ).choices[0].message.content
-        tts = openai_client.audio.speech.create(model="tts-1", voice="nova", input=summary, speed=0.9)
+        tts = openai_client.audio.speech.create(
+            model="tts-1", voice="nova", input=summary, speed=0.9
+        )
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
             tmp.write(tts.content)
             tmp_path = tmp.name
-        upload = cloudinary.uploader.upload(tmp_path, resource_type="video", folder="wazihealth/audio")
+        upload = cloudinary.uploader.upload(
+            tmp_path, resource_type="video", folder="wazihealth/audio"
+        )
         audio_url = upload["secure_url"]
         print(f"☁️ Audio: {audio_url}")
         twilio_client.messages.create(
@@ -485,7 +485,7 @@ def webhook():
             description = analyze_image(media_url)
             if description:
                 incoming_text = f"[Photo envoyée] {description}"
-                print(f"🖼️ Image analysée: {description}")
+                print(f"🖼️ Ajouté au contexte: {description}")
             else:
                 r = MessagingResponse()
                 r.message("📸 Photo reçue mais je n'arrive pas à l'analyser.\nDécrivez ce que vous voyez en texte svp.")
@@ -550,7 +550,6 @@ def webhook():
             r.message(f"📚 *{condition.replace('_', ' ').capitalize()}*\n\n{resources}")
             print(f"📚 Ressources: {condition}")
 
-    # Audio — si message vocal reçu
     if is_audio:
         t = threading.Thread(target=send_audio_async, args=(sender, ai_response))
         t.daemon = True
@@ -560,5 +559,5 @@ def webhook():
     return str(r)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
-
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
