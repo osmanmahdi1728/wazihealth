@@ -329,14 +329,32 @@ def is_critical(message):
     return any(k in message.lower() for k in CRITICAL_KEYWORDS)
 
 def is_handoff_request(sender, message):
-    if message.strip().upper() not in ["OUI","OUI.","OUI!"]: return False
-    if sender not in conversations or not conversations[sender]: return False
-    return "agent" in conversations[sender][-1]["content"].lower()
+    """Handoff uniquement si OUI après question agent explicite."""
+    if message.strip().upper() not in ["OUI", "OUI.", "OUI!"]:
+        return False
+    if sender not in conversations or not conversations[sender]:
+        return False
+    last = conversations[sender][-1]["content"].lower()
+    # Handoff seulement si la dernière question demande explicitement OUI/NON
+    return "répondez oui ou non" in last
 
 def is_feedback(sender, message):
-    if message.strip() not in ["1","2","3"]: return False
-    if sender not in conversations or not conversations[sender]: return False
-    return "cette réponse vous a-t-elle aidé" in conversations[sender][-1]["content"].lower()
+    """Feedback sur 1/2/3 après question feedback."""
+    if message.strip() not in ["1", "2", "3"]:
+        return False
+    if sender not in conversations or not conversations[sender]:
+        return False
+    last = conversations[sender][-1]["content"].lower()
+    return "cette réponse vous a-t-elle aidé" in last
+
+def is_location_request(sender, message):
+    """Détecte si l'utilisateur cherche pharmacie ou hôpital."""
+    if message.strip() not in ["1", "2", "3"]:
+        return False
+    if sender not in conversations or not conversations[sender]:
+        return False
+    last = conversations[sender][-1]["content"].lower()
+    return "pharmacie proche" in last or "besoin d'aide pour trouver" in last
 
 def analyze_image(media_url):
     try:
@@ -523,13 +541,63 @@ def webhook():
         r.message(HANDOFF_RESPONSE)
         return str(r)
 
-    # ── Layer 3: Feedback ───────────────────────────────────
+    # ── Layer 3: Location request ───────────────────────────
+    if is_location_request(sender, incoming_text):
+        choice = incoming_text.strip()
+        if choice == "1":
+            location_response = (
+                "🏥 *Trouver une pharmacie:*\n\n"
+                "• Tapez sur Google Maps:\n"
+                "  'pharmacie près de moi'\n"
+                "• Ouvertes généralement 8h-20h\n"
+                "• Demandez à un voisin la plus proche"
+            )
+        elif choice == "2":
+            location_response = (
+                "🏨 *Trouver un hôpital:*\n\n"
+                "• Urgences → appelez le 15\n"
+                "• Tapez sur Google Maps:\n"
+                "  'hôpital près de moi'\n"
+                "• Un taxi peut vous y emmener"
+            )
+        else:
+            location_response = None
+        r = MessagingResponse()
+        if location_response:
+            r.message(location_response)
+        r.message(
+            "🙏 Cette réponse vous a-t-elle aidé?\n"
+            "1️⃣ Oui\n"
+            "2️⃣ Partiellement\n"
+            "3️⃣ Non — je veux parler à quelqu'un"
+        )
+        conversations[sender].append({
+            "role": "assistant",
+            "content": "Cette réponse vous a-t-elle aidé? 1 Oui 2 Partiellement 3 Non — je veux parler à quelqu'un"
+        })
+        log_to_db(sender, "assistant", location_response or "no_location", triage_level="LOCATION")
+        return str(r)
+
+    # ── Layer 3b: Feedback ──────────────────────────────────
     if is_feedback(sender, incoming_text):
         feedback_value = FEEDBACK_CHOICES.get(incoming_text.strip(), "inconnu")
         print(f"📊 Feedback: {feedback_value}")
         log_to_db(sender, "feedback", feedback_value, triage_level="FEEDBACK")
         r = MessagingResponse()
-        r.message("Merci! 🙏 Votre avis aide WaziHealth à s'améliorer.\n\nPrenez soin de vous 💚")
+        if incoming_text.strip() == "3":
+            agent_question = (
+                "Désolé que la réponse n'ait pas été utile.\n\n"
+                "Voulez-vous être mis en contact avec un agent?\n"
+                "Répondez OUI ou NON"
+            )
+            r.message(agent_question)
+            conversations[sender].append({
+                "role": "assistant",
+                "content": agent_question
+            })
+        else:
+            r.message("Merci! 🙏 Prenez soin de vous 💚")
+            conversations.pop(sender, None)
         return str(r)
 
     # ── Layer 4: Triage AI ──────────────────────────────────
@@ -561,3 +629,4 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
