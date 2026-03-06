@@ -7,6 +7,8 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 from openai import OpenAI
 from supabase import create_client
+import cloudinary
+import cloudinary.uploader
 
 # ── App setup ──────────────────────────────────────────────
 app = Flask(__name__)
@@ -18,6 +20,11 @@ supabase = create_client(
 twilio_client = TwilioClient(
     os.environ.get("TWILIO_ACCOUNT_SID"),
     os.environ.get("TWILIO_AUTH_TOKEN")
+)
+cloudinary.config(
+    cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.environ.get("CLOUDINARY_API_KEY"),
+    api_secret=os.environ.get("CLOUDINARY_API_SECRET")
 )
 
 # ── Conversation memory ────────────────────────────────────
@@ -59,28 +66,26 @@ Tu évalues le niveau d'urgence et structures TOUJOURS ta réponse finale ainsi:
 Niveaux d'urgence:
 🟢 VERT — Soins à domicile
 → Symptômes légers, pas de danger immédiat
-→ Conseils pratiques suffisants
 
 🟡 JAUNE — Pharmacie ou médecin dans les 24h
 → Symptômes modérés qui nécessitent attention
-→ Donner automédication sûre en attendant
 
 🔴 ROUGE — URGENCE, soins immédiats requis
 → Symptômes graves ou potentiellement mortels
-→ Pas de conseil automédication — urgences seulement
 
-Règles importantes:
+Règles:
 - Pendant les questions de suivi → pas de format, juste la question
 - Format structuré UNIQUEMENT pour la réponse finale
 - Maximum 2 questions avant de donner la réponse finale
 - Section 💊 uniquement pour VERT et JAUNE — jamais pour ROUGE
-- Automédication: uniquement médicaments sans ordonnance
-  (paracétamol, SRO, antihistaminiques basiques)
+- Automédication: uniquement sans ordonnance
+  (paracétamol, SRO, antihistaminiques)
 - Jamais recommander antibiotiques sans ordonnance
-- Prix en CFA quand possible (contexte Sénégal/Côte d'Ivoire)
+- Prix en CFA quand possible
 - Maladies fréquentes: paludisme, typhoïde, méningite, dengue, choléra
 - Si urgence évidente → ROUGE immédiatement sans questions
 - Toujours répondre en français"""
+
 # ── Emergency constants ────────────────────────────────────
 CRITICAL_KEYWORDS = [
     "ne respire pas", "arrêt cardiaque", "inconscient",
@@ -91,9 +96,9 @@ EMERGENCY_RESPONSE = """🔴 URGENCE MÉDICALE CRITIQUE
 
 Ce que vous décrivez nécessite une aide médicale IMMÉDIATE.
 
-👉 Appelez le 15 (SAMU) ou rendez-vous aux urgences les plus proches MAINTENANT.
+👉 Appelez le 15 (SAMU) ou rendez-vous aux urgences MAINTENANT.
 
-Ne restez pas seul(e). Demandez à quelqu'un de vous accompagner.
+Ne restez pas seul(e).
 
 ⚠️ Ceci n'est pas un avis médical professionnel."""
 
@@ -101,7 +106,7 @@ HANDOFF_RESPONSE = """👤 *Transfert vers un agent humain*
 
 Un agent WaziHealth va vous contacter dans les plus brefs délais.
 
-📞 Vous pouvez aussi nous appeler directement:
+📞 Vous pouvez aussi nous appeler:
 *+221 XX XXX XX XX*
 
 Merci de votre confiance. 🙏"""
@@ -121,8 +126,24 @@ def extract_triage_level(ai_response):
         return "GREEN"
     return "PENDING"
 
+# ── Helper: detect condition for media matching ────────────
+def detect_condition(ai_response):
+    response_lower = ai_response.lower()
+    conditions = {
+        "paludisme": ["paludisme", "malaria", "tdr"],
+        "typhoide":  ["typhoïde", "typhoide", "fièvre typhoïde"],
+        "diarrhee":  ["diarrhée", "diarrhee", "gastro", "sro"],
+        "meningite": ["méningite", "meningite"],
+        "dengue":    ["dengue"],
+    }
+    for condition, keywords in conditions.items():
+        if any(kw in response_lower for kw in keywords):
+            return condition
+    return None
+
 # ── Helper: log to Supabase ───────────────────────────────
-def log_to_db(sender, role, content, triage_level=None, is_emergency=False):
+def log_to_db(sender, role, content,
+              triage_level=None, is_emergency=False):
     try:
         supabase.table("consultations").insert({
             "session_id":      hash_sender(sender),
@@ -151,9 +172,7 @@ def is_critical(message):
 
 # ── Helper: transcribe voice note ─────────────────────────
 def transcribe_audio(media_url):
-    """Download WhatsApp voice note and transcribe with Whisper."""
     try:
-        # Download audio using Twilio credentials
         auth = (
             os.environ.get("TWILIO_ACCOUNT_SID"),
             os.environ.get("TWILIO_AUTH_TOKEN")
@@ -164,8 +183,9 @@ def transcribe_audio(media_url):
             print(f"⚠️ Audio download failed: {audio_response.status_code}")
             return None
 
-        # Save to temp file and transcribe
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(
+            suffix=".ogg", delete=False
+        ) as tmp:
             tmp.write(audio_response.content)
             tmp_path = tmp.name
 
@@ -173,7 +193,7 @@ def transcribe_audio(media_url):
             transcription = openai_client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
-                language="fr"  # French — change to None for auto-detect
+                language="fr"
             )
 
         transcript = transcription.text
@@ -182,6 +202,39 @@ def transcribe_audio(media_url):
 
     except Exception as e:
         print(f"❌ Transcription error: {e}")
+        return None
+
+# ── Helper: generate audio response ───────────────────────
+def generate_audio_response(text):
+    try:
+        # Generate speech with OpenAI TTS
+        tts_response = openai_client.audio.speech.create(
+            model="tts-1",
+            voice="nova",
+            input=text,
+            speed=0.9
+        )
+
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(
+            suffix=".mp3", delete=False
+        ) as tmp:
+            tmp.write(tts_response.content)
+            tmp_path = tmp.name
+
+        # Upload to Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            tmp_path,
+            resource_type="video",
+            folder="wazihealth/audio"
+        )
+
+        audio_url = upload_result["secure_url"]
+        print(f"🔊 Audio uploaded: {audio_url}")
+        return audio_url
+
+    except Exception as e:
+        print(f"❌ TTS error: {e}")
         return None
 
 # ── AI response with memory ────────────────────────────────
@@ -204,7 +257,7 @@ def get_ai_response(sender, user_message):
         completion = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
-            max_tokens=400,
+            max_tokens=500,
             temperature=0.2
         )
 
@@ -231,26 +284,26 @@ def home():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    sender        = request.form.get("From", "")
-    incoming_text = request.form.get("Body", "").strip()
-    num_media     = int(request.form.get("NumMedia", 0))
+    sender         = request.form.get("From", "")
+    incoming_text  = request.form.get("Body", "").strip()
+    num_media      = int(request.form.get("NumMedia", 0))
+    is_audio_input = False
 
     # ── Handle voice note ───────────────────────────────────
     if num_media > 0:
-        media_url         = request.form.get("MediaUrl0", "")
+        media_url          = request.form.get("MediaUrl0", "")
         media_content_type = request.form.get("MediaContentType0", "")
 
-        print(f"🎤 Voice note reçu de {hash_sender(sender)}")
-        print(f"   Type: {media_content_type}")
+        print(f"🎤 Media reçu: {media_content_type}")
 
         if "audio" in media_content_type:
+            is_audio_input = True
             transcript = transcribe_audio(media_url)
 
             if transcript:
                 incoming_text = transcript
-                print(f"✅ Transcription réussie: {incoming_text}")
+                print(f"✅ Transcription: {incoming_text}")
             else:
-                # Transcription failed — ask user to type
                 response = MessagingResponse()
                 response.message(
                     "🎤 Je n'ai pas pu comprendre votre message vocal.\n\n"
@@ -258,15 +311,14 @@ def webhook():
                 )
                 return str(response)
         else:
-            # Not an audio file (image, video, etc.)
             response = MessagingResponse()
             response.message(
                 "Je peux recevoir des messages vocaux et texte.\n"
-                "Décrivez vos symptômes en texte ou en message vocal. 🎤"
+                "Décrivez vos symptômes en texte ou message vocal 🎤"
             )
             return str(response)
 
-    # ── No message content at all ───────────────────────────
+    # ── Empty message → welcome ─────────────────────────────
     if not incoming_text:
         response = MessagingResponse()
         response.message(
@@ -277,8 +329,6 @@ def webhook():
         return str(response)
 
     print(f"📩 Message de {hash_sender(sender)}: {incoming_text}")
-
-    # Log user message
     log_to_db(sender, "user", incoming_text)
 
     # ── Layer 1: Critical emergency ─────────────────────────
@@ -304,15 +354,25 @@ def webhook():
     # ── Layer 3: AI triage ──────────────────────────────────
     ai_response  = get_ai_response(sender, incoming_text)
     triage_level = extract_triage_level(ai_response)
+    condition    = detect_condition(ai_response)
 
-    log_to_db(sender, "assistant", ai_response, triage_level=triage_level)
-    print(f"🤖 Triage: {triage_level}")
+    log_to_db(sender, "assistant", ai_response,
+              triage_level=triage_level)
+    print(f"🤖 Triage: {triage_level} | Condition: {condition}")
 
     response = MessagingResponse()
+
+    # Send audio response if user sent audio
+    if is_audio_input:
+        audio_url = generate_audio_response(ai_response)
+        if audio_url:
+            response.message("🎤 Réponse vocale:").media(audio_url)
+
+    # Always send text response
     response.message(ai_response)
+
     return str(response)
 
 # ── Run ────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
-
