@@ -20,150 +20,143 @@ cloudinary.config(
 conversations = {}
 MAX_HISTORY = 20
 
-SYSTEM_PROMPT = """Tu es WaziHealth, assistant médical pour l'Afrique de l'Ouest.
-Langue: français simple, phrases courtes, mots du quotidien.
-Évite le jargon médical. Sois chaleureux et rassurant.
+SYSTEM_PROMPT = """Tu es WaziHealth, assistant santé pour l'Afrique de l'Ouest.
+Tu parles comme un infirmier bienveillant — simple, clair, rassurant.
+Pas de termes médicaux compliqués. Phrases courtes.
 
-ÉTAPES OBLIGATOIRES — dans l'ordre:
+RÈGLE PRINCIPALE: Maximum 3 échanges avant le diagnostic.
+Si les réponses sont vagues → 4 échanges max, puis diagnostique quand même.
 
-ÉTAPE 1 — Symptôme principal
-Pose cette question exactement:
-"Qu'est-ce qui ne va pas?
-1️⃣ Fièvre / chaleur
-2️⃣ Douleur (tête, ventre, dos, articulations)
-3️⃣ Ventre (nausées, vomissements, diarrhée)
-4️⃣ Respiration (toux, souffle court)
-5️⃣ Fatigue / faiblesse
-6️⃣ Peau (boutons, démangeaisons, plaie)
-7️⃣ Autre — décrivez"
+━━━━━━━━━━━━━━━━━━━━━━
+ÉCHANGE 1 — Symptôme + durée
+━━━━━━━━━━━━━━━━━━━━━━
+Pose UNE seule question combinée:
+"Qu'est-ce qui ne va pas et depuis quand?
+1️⃣ Fièvre / chaleur — aujourd'hui
+2️⃣ Fièvre / chaleur — depuis 2-3 jours ou plus
+3️⃣ Mal de tête / ventre / dos
+4️⃣ Toux / mal à respirer
+5️⃣ Diarrhée / vomissements
+6️⃣ Problème de peau (boutons, plaie, démangeaisons)
+7️⃣ Fatigue / faiblesse
+8️⃣ Autre — décrivez en un mot"
 
-ÉTAPE 2 — Depuis quand?
-"Depuis quand?
-1️⃣ Aujourd'hui — pas grave
-2️⃣ Aujourd'hui — très intense
-3️⃣ 1 à 3 jours — supportable
-4️⃣ 1 à 3 jours — difficile
-5️⃣ Plus de 3 jours"
+━━━━━━━━━━━━━━━━━━━━━━
+ÉCHANGE 2 — 2-3 signes visibles ou ressentis
+━━━━━━━━━━━━━━━━━━━━━━
+Selon la réponse, pose UNE question avec 4-5 choix max:
 
-ÉTAPE 3 — Signes en plus
-Selon la réponse étape 1:
-
-FIÈVRE → "Avez-vous aussi: (donnez les numéros)
-1️⃣ Frissons / tremblements
+Si FIÈVRE:
+"Avez-vous aussi: (donnez les numéros)
+1️⃣ Frissons ou tremblements
 2️⃣ Sueurs
-3️⃣ Mal de tête
-4️⃣ Courbatures
-5️⃣ Nausées / vomissements
-6️⃣ Nuque raide
-7️⃣ Boutons / taches sur la peau
-8️⃣ Yeux jaunes
-9️⃣ Urine foncée"
+3️⃣ Mal de tête fort
+4️⃣ Yeux qui jaunissent
+5️⃣ Urine très foncée (marron)"
 
-DOULEUR VENTRE → "Avez-vous aussi:
-1️⃣ Diarrhée
+Si TOUX:
+"Avec la toux: (donnez les numéros)
+1️⃣ Crachats jaunes ou verts
+2️⃣ Un peu de sang dans les crachats
+3️⃣ Fièvre en même temps
+4️⃣ Essoufflement même au repos
+5️⃣ Amaigrissement récent"
+
+Si VENTRE:
+"Avec le mal de ventre: (donnez les numéros)
+1️⃣ Diarrhée (combien de fois?)
 2️⃣ Vomissements
 3️⃣ Fièvre
 4️⃣ Sang dans les selles
-5️⃣ Ventre gonflé
-6️⃣ Brûlures en urinant
-7️⃣ Pas de selles depuis 3+ jours"
+5️⃣ Ventre très gonflé"
 
-TOUX → "Avez-vous aussi:
-1️⃣ Fièvre
-2️⃣ Crachats (jaunes/verts/avec sang)
-3️⃣ Souffle court même au repos
-4️⃣ Douleur poitrine
-5️⃣ Sueurs la nuit
-6️⃣ Perte de poids récente"
+Si PEAU:
+"Sur la peau, c'est: (donnez les numéros)
+1️⃣ Boutons rouges qui démangent
+2️⃣ Plaie ou blessure
+3️⃣ Gonflement
+4️⃣ Peau qui pèle ou sèche
+5️⃣ Taches blanches (bouche ou peau)"
 
-PEAU → "C'est quoi exactement:
-1️⃣ Boutons / rougeurs
-2️⃣ Démangeaisons
-3️⃣ Plaie / blessure
-4️⃣ Gonflement
-5️⃣ Peau qui pèle
-6️⃣ Taches blanches dans la bouche"
-
-ÉTAPE 4 — Profil rapide
-"Dernières questions:
-• Âge: Bébé / Enfant / Adulte / Personne âgée?
+━━━━━━━━━━━━━━━━━━━━━━
+ÉCHANGE 3 — Profil (1 question rapide)
+━━━━━━━━━━━━━━━━━━━━━━
+"Dernière question:
+• C'est pour qui? Bébé / Enfant / Adulte / Personne âgée
 • Femme enceinte? Oui / Non
-• Voyage en brousse/village récemment? Oui / Non
-• Autres malades autour de vous? Oui / Non"
+• Voyage récent en zone rurale? Oui / Non"
 
-ÉTAPE 5 — RÉPONSE FINALE
-Seulement après les 4 étapes:
+━━━━━━━━━━━━━━━━━━━━━━
+ÉCHANGE 4 — DIAGNOSTIC FINAL (toujours après échange 3)
+━━━━━━━━━━━━━━━━━━━━━━
+Format exact:
 
-[emoji] [NIVEAU] — [titre simple]
+[emoji niveau] [NIVEAU] — [titre simple]
 
-🔍 Ce que j'observe: [symptômes en langage simple]
+🔍 Ce que ça ressemble à: [explication simple, 1-2 phrases]
 
-💊 En attendant:
-   • [conseil simple 1]
-   • [conseil simple 2]
-   • ❌ Évitez: [ce qu'il ne faut pas faire]
+💊 À faire maintenant:
+   • [action 1 simple]
+   • [action 2 simple]
+   • ❌ Évitez: [1 chose à ne pas faire]
 
 🏥 À la pharmacie:
-   • Demandez: "[mots exacts]"
+   • Demandez: "[mots exacts à dire au pharmacien]"
    • Prix: ~[montant] CFA
 
-👉 À faire maintenant: [action claire]
-
-📞 Contactez:
-   • [option 1]
-   • [option 2]
+📞 Consultez:
+   • [qui contacter, où aller]
 
 💬 Voulez-vous parler à quelqu'un? Répondez OUI
+
+━━━━━━━━━━━━━━━━━━━━━━
+🙏 Cette réponse vous a-t-elle aidé?
+1️⃣ Oui
+2️⃣ Partiellement
+3️⃣ Non
+
+Votre avis améliore WaziHealth 💚
+━━━━━━━━━━━━━━━━━━━━━━
 
 ⚠️ Ceci ne remplace pas un médecin.
 
 NIVEAUX:
-🟢 VERT = repos à la maison
-🟡 JAUNE = pharmacie ou médecin dans 24h
-🔴 ROUGE = urgence, partez maintenant
+🟢 VERT = restez à la maison, voici quoi faire
+🟡 JAUNE = pharmacie ou centre de santé dans 24h
+🔴 ROUGE = partez aux urgences maintenant
 
-URGENCES IMMÉDIATES → ROUGE sans questions:
-- Inconscient / ne répond pas
-- Ne respire pas / souffle très difficile
-- Fièvre + nuque raide (méningite possible)
+URGENCES → ROUGE immédiat sans questions:
+- Ne répond pas / inconscient
+- Ne respire pas / lèvres bleues
+- Convulsions
+- Fièvre + nuque qui ne plie pas
 - Bébé moins de 3 mois avec fièvre
-- Convulsions / tremblements du corps entier
-- Sang qui ne s'arrête pas
-- Douleur poitrine forte + bras gauche
-- Yeux jaunes + urine très foncée (foie)
+- Saignement qui ne s'arrête pas
+- Douleur poitrine forte
+- Yeux jaunes + urine marron foncé
 - Femme enceinte avec saignement
-- Perte de conscience
+- Bouche tordue / bras qui ne bouge plus
 
 RÈGLES:
-- Jamais diagnostiquer avant les 4 étapes
-- Phrases courtes, simples
+- Max 3 échanges (4 si vraiment nécessaire)
+- UNE seule question par échange
+- Jamais de termes médicaux complexes
 - Jamais prescrire antibiotiques
-- Prix en CFA
-- Section 💊 uniquement pour VERT et JAUNE"""
+- Section 💊 uniquement pour VERT et JAUNE
+- Prix en CFA"""
 
-# ── Emergency keywords — étendu ────────────────────────────
 CRITICAL_KEYWORDS = [
-    # Conscience
     "inconscient", "sans connaissance", "ne répond pas", "ne répond plus",
-    "évanoui", "tombe", "perdu connaissance",
-    # Respiration
+    "évanoui", "perdu connaissance", "tombe dans les pommes",
     "ne respire pas", "arrêt respiratoire", "étouffement", "étouffe",
-    "souffle court au repos", "bleu", "lèvres bleues",
-    # Cardiaque
-    "arrêt cardiaque", "cœur arrêté", "douleur poitrine forte",
-    "infarctus",
-    # Neurologique
-    "convulsions", "crise d'épilepsie", "tremble tout", "paralysé",
-    "paralysie", "AVC", "bouche tordue", "visage tordu",
-    # Saignement
+    "lèvres bleues", "bleu", "souffle coupé",
+    "arrêt cardiaque", "infarctus", "douleur poitrine forte",
+    "convulsions", "crise épilepsie", "tremble tout", "paralysé",
+    "paralysie", "avc", "bouche tordue", "visage tordu", "bras ne bouge plus",
     "saignement abondant", "beaucoup de sang", "hémorragie",
-    "sang qui coule", "sang dans vomissements",
-    # Intoxication
-    "overdose", "empoisonnement", "avalé produit", "avalé médicaments",
-    "intoxication",
-    # Méningite
+    "sang dans vomissements", "vomit du sang",
+    "overdose", "empoisonnement", "avalé produit", "intoxication",
     "nuque raide", "raideur nuque", "ne peut pas baisser la tête",
-    # Grossesse
     "saignement enceinte", "douleur enceinte forte",
 ]
 
@@ -180,31 +173,36 @@ Un agent WaziHealth vous appelle bientôt.
 📞 Ou appelez: *+221 XX XXX XX XX*
 Merci 🙏"""
 
-# ── Resource library — étendue ─────────────────────────────
 RESOURCES = {
     "paludisme": {
         "video":     "https://youtube.com/watch?v=7k8KfqUkMDU",
         "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/malaria",
         "aliments":  "🥗 À manger:\n   • Bouillon de poulet\n   • Riz blanc\n   • Banane\n   • Eau de coco",
-        "hydration": "💧 Buvez 3L d'eau par jour"
+        "hydration": "💧 3L d'eau par jour"
+    },
+    "paludisme_enfant": {
+        "video":     "https://youtube.com/watch?v=7k8KfqUkMDU",
+        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/malaria",
+        "aliments":  "🥗 Pour enfant:\n   • Lait maternel si nourrisson\n   • Bouillon léger\n   • Eau de coco",
+        "hydration": "💧 SRO si diarrhée — pharmacie"
     },
     "typhoide": {
         "video":     "https://youtube.com/watch?v=3vMxVPcKDlY",
         "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/typhoid",
         "aliments":  "🥗 À manger:\n   • Soupe légère\n   • Yaourt nature\n   • Pomme de terre cuite\n   • ❌ Pas d'épices",
-        "hydration": "💧 SRO en pharmacie — priorité"
+        "hydration": "💧 SRO en pharmacie"
     },
     "diarrhee": {
         "video":     "https://youtube.com/watch?v=W0JQPMDPkBQ",
         "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/diarrhoeal-disease",
-        "aliments":  "🥗 À manger:\n   • Riz blanc\n   • Banane\n   • Pain grillé\n   • ❌ Pas de lait, pas de friture",
+        "aliments":  "🥗 À manger:\n   • Riz blanc\n   • Banane\n   • Pain grillé\n   • ❌ Pas de lait ni friture",
         "hydration": "💧 SRO — 1 sachet dans 1L d'eau"
     },
     "meningite": {
         "video":     "https://youtube.com/watch?v=MNhkTMUCHHw",
         "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/meningitis",
         "aliments":  "🥗 Urgence — allez à l'hôpital",
-        "hydration": "💧 Perfusion à l'hôpital uniquement"
+        "hydration": "💧 Perfusion à l'hôpital"
     },
     "dengue": {
         "video":     "https://youtube.com/watch?v=k3EQCn9GPCU",
@@ -216,7 +214,7 @@ RESOURCES = {
         "video":     "https://youtube.com/watch?v=OvNNsR5FXKU",
         "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/influenza-(seasonal)",
         "aliments":  "🥗 À manger:\n   • Soupe chaude\n   • Miel + citron\n   • Gingembre\n   • Bouillon",
-        "hydration": "💧 Tisanes chaudes + 2L d'eau"
+        "hydration": "💧 Tisanes + 2L d'eau"
     },
     "deshydratation": {
         "video":     "https://youtube.com/watch?v=9iMGFqMmUFs",
@@ -228,51 +226,47 @@ RESOURCES = {
         "video":     "https://youtube.com/watch?v=YFKQ4R7MYXI",
         "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/cholera",
         "aliments":  "🥗 Urgence — SRO immédiatement",
-        "hydration": "💧 SRO en continu — allez au centre de santé"
+        "hydration": "💧 SRO en continu — centre de santé"
     },
     "tuberculose": {
         "video":     "https://youtube.com/watch?v=K4eFSbFhRkE",
         "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/tuberculosis",
-        "aliments":  "🥗 À manger:\n   • Protéines (œufs, poisson)\n   • Légumes frais\n   • Fruits",
+        "aliments":  "🥗 À manger:\n   • Œufs\n   • Poisson\n   • Légumes frais\n   • Fruits",
         "hydration": "💧 2L d'eau par jour"
     },
     "infection_urinaire": {
         "video":     "https://youtube.com/watch?v=QqSaIFp3k0Q",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/urinary-tract-infections",
-        "aliments":  "🥗 À manger:\n   • Jus de canneberge\n   • Yaourt nature\n   • ❌ Pas d'alcool ni café",
-        "hydration": "💧 Buvez beaucoup — 3L minimum"
+        "info":      "https://www.who.int/fr/",
+        "aliments":  "🥗 À manger:\n   • Yaourt nature\n   • ❌ Pas d'alcool ni café",
+        "hydration": "💧 3L d'eau minimum"
     },
     "hypertension": {
         "video":     "https://youtube.com/watch?v=ab5p3B5XJBE",
         "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/hypertension",
-        "aliments":  "🥗 À manger:\n   • Légumes frais\n   • Banane\n   • Poisson\n   • ❌ Pas de sel, pas de friture",
+        "aliments":  "🥗 À manger:\n   • Légumes frais\n   • Banane\n   • Poisson\n   • ❌ Pas de sel ni friture",
         "hydration": "💧 2L d'eau par jour"
     },
     "diabete": {
         "video":     "https://youtube.com/watch?v=9OvSIFZMfmI",
         "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/diabetes",
-        "aliments":  "🥗 À manger:\n   • Légumes verts\n   • Poisson grillé\n   • ❌ Pas de sucre, pas de jus sucré",
-        "hydration": "💧 Eau uniquement — pas de sodas"
+        "aliments":  "🥗 À manger:\n   • Légumes verts\n   • Poisson grillé\n   • ❌ Pas de sucre ni sodas",
+        "hydration": "💧 Eau uniquement"
     },
     "malnutrition": {
         "video":     "https://youtube.com/watch?v=GlxiUkEFtL4",
         "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/malnutrition",
-        "aliments":  "🥗 À manger:\n   • Légumineuses (niébé, lentilles)\n   • Œufs\n   • Poisson\n   • Arachides",
+        "aliments":  "🥗 À manger:\n   • Niébé, lentilles\n   • Œufs\n   • Poisson\n   • Arachides",
         "hydration": "💧 Eau propre — 2L par jour"
     },
     "conjonctivite": {
         "video":     "https://youtube.com/watch?v=xMEMWKHHcCk",
         "info":      "https://www.who.int/fr/",
-        "aliments":  "🥗 Pas de régime spécial\n   • Lavez les mains souvent\n   • ❌ Ne frottez pas les yeux",
+        "aliments":  "🥗 Lavez les mains souvent\n   • ❌ Ne frottez pas les yeux",
         "hydration": "💧 Normal"
     },
-    "paludisme_enfant": {
-        "video":     "https://youtube.com/watch?v=7k8KfqUkMDU",
-        "info":      "https://www.who.int/fr/news-room/fact-sheets/detail/malaria",
-        "aliments":  "🥗 Pour enfant:\n   • Lait maternel si nourrisson\n   • Bouillon léger\n   • Eau de coco",
-        "hydration": "💧 SRO si diarrhée — pharmacie"
-    }
 }
+
+FEEDBACK_CHOICES = {"1": "utile", "2": "partiel", "3": "non_utile"}
 
 # ── Helpers ────────────────────────────────────────────────
 def hash_sender(s):
@@ -288,10 +282,10 @@ def extract_triage_level(r):
 def detect_condition(ai_response):
     r = ai_response.lower()
     conditions = {
-        "paludisme":         ["paludisme", "malaria", "tdr paludisme"],
         "paludisme_enfant":  ["paludisme enfant", "malaria enfant", "paludisme bébé"],
+        "paludisme":         ["paludisme", "malaria", "tdr"],
         "typhoide":          ["typhoïde", "typhoide", "fièvre typhoïde"],
-        "diarrhee":          ["diarrhée", "diarrhee", "gastro-entérite", "sro"],
+        "diarrhee":          ["diarrhée", "diarrhee", "gastro", "sro"],
         "meningite":         ["méningite", "meningite"],
         "dengue":            ["dengue"],
         "grippe":            ["grippe", "influenza", "rhume"],
@@ -310,8 +304,7 @@ def detect_condition(ai_response):
     return None
 
 def get_resources(condition):
-    if not condition or condition not in RESOURCES:
-        return None
+    if not condition or condition not in RESOURCES: return None
     res = RESOURCES[condition]
     return (
         f"{res['aliments']}\n\n"
@@ -333,13 +326,47 @@ def log_to_db(sender, role, content, triage_level=None, is_emergency=False):
     except Exception as e:
         print(f"⚠️ DB error: {e}")
 
+def is_critical(message):
+    return any(k in message.lower() for k in CRITICAL_KEYWORDS)
+
 def is_handoff_request(sender, message):
     if message.strip().upper() not in ["OUI","OUI.","OUI!"]: return False
     if sender not in conversations or not conversations[sender]: return False
     return "agent" in conversations[sender][-1]["content"].lower()
 
-def is_critical(message):
-    return any(k in message.lower() for k in CRITICAL_KEYWORDS)
+def is_feedback(sender, message):
+    if message.strip() not in ["1","2","3"]: return False
+    if sender not in conversations or not conversations[sender]: return False
+    return "cette réponse vous a-t-elle aidé" in conversations[sender][-1]["content"].lower()
+
+def analyze_image(media_url):
+    try:
+        print("🖼️ Analyse image...")
+        auth = (os.environ.get("TWILIO_ACCOUNT_SID"), os.environ.get("TWILIO_AUTH_TOKEN"))
+        res = requests.get(media_url, auth=auth, timeout=30)
+        if res.status_code != 200: return None
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(res.content)
+            tmp_path = tmp.name
+        upload = cloudinary.uploader.upload(tmp_path, folder="wazihealth/images")
+        public_url = upload["secure_url"]
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Tu es un assistant santé. Décris simplement ce que tu vois sur cette photo: couleur, aspect, localisation. 2-3 phrases max. Pas de diagnostic."},
+                    {"type": "image_url", "image_url": {"url": public_url}}
+                ]
+            }],
+            max_tokens=150
+        )
+        description = response.choices[0].message.content
+        print(f"🖼️ Description: {description}")
+        return description
+    except Exception as e:
+        print(f"❌ Image error: {e}")
+        return None
 
 def transcribe_audio(media_url):
     try:
@@ -365,7 +392,7 @@ def send_audio_async(sender, ai_response):
         summary = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Résume en 2-3 phrases très courtes et simples pour un message vocal. Garde l'urgence et l'action principale."},
+                {"role": "system", "content": "Résume en 2-3 phrases très courtes pour message vocal. Garde urgence + action principale."},
                 {"role": "user",   "content": ai_response}
             ],
             max_tokens=100
@@ -383,7 +410,7 @@ def send_audio_async(sender, ai_response):
             media_url=[audio_url],
             body="🎤"
         )
-        print(f"✅ Audio envoyé")
+        print("✅ Audio envoyé")
     except Exception as e:
         print(f"❌ Audio error: {type(e).__name__}: {e}")
 
@@ -415,10 +442,12 @@ def webhook():
     num_media     = int(request.form.get("NumMedia", 0))
     is_audio      = False
 
+    # ── Media (audio ou image) ──────────────────────────────
     if num_media > 0:
         media_url  = request.form.get("MediaUrl0", "")
         media_type = request.form.get("MediaContentType0", "")
         print(f"📎 Media: {media_type}")
+
         if "audio" in media_type:
             is_audio   = True
             transcript = transcribe_audio(media_url)
@@ -428,19 +457,32 @@ def webhook():
                 r = MessagingResponse()
                 r.message("🎤 Pas compris. Écrivez vos symptômes svp 🙏")
                 return str(r)
+
+        elif "image" in media_type:
+            description = analyze_image(media_url)
+            if description:
+                incoming_text = f"[Photo envoyée] {description}"
+                print(f"🖼️ Image analysée: {description}")
+            else:
+                r = MessagingResponse()
+                r.message("📸 Photo reçue mais je n'arrive pas à l'analyser.\nDécrivez ce que vous voyez en texte svp.")
+                return str(r)
+
         else:
             r = MessagingResponse()
-            r.message("Envoyez un texte ou message vocal 🎤")
+            r.message("Envoyez un texte, une photo 📸 ou un message vocal 🎤")
             return str(r)
 
+    # ── Message vide ────────────────────────────────────────
     if not incoming_text:
         r = MessagingResponse()
-        r.message("👋 Bonjour! Je suis WaziHealth.\nDites-moi ce qui ne va pas — texte ou vocal 🎤")
+        r.message("👋 Bonjour! Je suis WaziHealth.\nDites-moi ce qui ne va pas — texte, photo 📸 ou vocal 🎤")
         return str(r)
 
     print(f"📩 {hash_sender(sender)}: {incoming_text}")
     log_to_db(sender, "user", incoming_text)
 
+    # ── Layer 1: Urgence critique ───────────────────────────
     if is_critical(incoming_text):
         print("🚨 CRITIQUE")
         log_to_db(sender, "assistant", EMERGENCY_RESPONSE, triage_level="RED", is_emergency=True)
@@ -449,6 +491,7 @@ def webhook():
         r.message(EMERGENCY_RESPONSE)
         return str(r)
 
+    # ── Layer 2: Transfert humain ───────────────────────────
     if is_handoff_request(sender, incoming_text):
         print("👤 Handoff")
         log_to_db(sender, "system", "HUMAN_HANDOFF_REQUESTED", triage_level="HANDOFF")
@@ -457,6 +500,16 @@ def webhook():
         r.message(HANDOFF_RESPONSE)
         return str(r)
 
+    # ── Layer 3: Feedback ───────────────────────────────────
+    if is_feedback(sender, incoming_text):
+        feedback_value = FEEDBACK_CHOICES.get(incoming_text.strip(), "inconnu")
+        print(f"📊 Feedback: {feedback_value}")
+        log_to_db(sender, "feedback", feedback_value, triage_level="FEEDBACK")
+        r = MessagingResponse()
+        r.message("Merci! 🙏 Votre avis aide WaziHealth à s'améliorer.\n\nPrenez soin de vous 💚")
+        return str(r)
+
+    # ── Layer 4: Triage AI ──────────────────────────────────
     ai_response  = get_ai_response(sender, incoming_text)
     triage_level = extract_triage_level(ai_response)
     condition    = detect_condition(ai_response)
@@ -467,12 +520,14 @@ def webhook():
     r = MessagingResponse()
     r.message(ai_response)
 
+    # Ressources — seulement sur diagnostic final VERT ou JAUNE
     if condition and triage_level in ["GREEN", "YELLOW"]:
         resources = get_resources(condition)
         if resources:
             r.message(f"📚 *{condition.replace('_', ' ').capitalize()}*\n\n{resources}")
             print(f"📚 Ressources: {condition}")
 
+    # Audio — si message vocal reçu
     if is_audio:
         t = threading.Thread(target=send_audio_async, args=(sender, ai_response))
         t.daemon = True
