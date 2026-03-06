@@ -344,30 +344,53 @@ def analyze_image(media_url):
         print("🖼️ Analyse image...")
         auth = (os.environ.get("TWILIO_ACCOUNT_SID"), os.environ.get("TWILIO_AUTH_TOKEN"))
         res = requests.get(media_url, auth=auth, timeout=30)
-        if res.status_code != 200: return None
+        if res.status_code != 200:
+            print(f"❌ Échec téléchargement image: {res.status_code}")
+            return None
+
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp.write(res.content)
             tmp_path = tmp.name
+
         upload = cloudinary.uploader.upload(tmp_path, folder="wazihealth/images")
         public_url = upload["secure_url"]
+        print(f"☁️ Image uploadée: {public_url}")
+
         response = openai_client.chat.completions.create(
             model="gpt-4o",
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Tu es un assistant santé. Décris simplement ce que tu vois sur cette photo: couleur, aspect, localisation. 2-3 phrases max. Pas de diagnostic."},
-                    {"type": "image_url", "image_url": {"url": public_url}}
+                    {
+                        "type": "text",
+                        "text": (
+                            "Tu es un infirmier expérimenté en Afrique de l'Ouest. "
+                            "Analyse cette photo médicale:\n"
+                            "1. Décris ce que tu vois (couleur, taille, forme, localisation)\n"
+                            "2. Note les détails importants: rougeur, gonflement, pus, sécheresse, taches\n"
+                            "3. Donne 1-2 hypothèses probables à confirmer\n"
+                            "4. Indique si la photo est claire ou difficile à analyser\n"
+                            "Maximum 4 phrases. "
+                            "Termine toujours par: 'À confirmer avec des questions.'"
+                        )
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": public_url}
+                    }
                 ]
             }],
-            max_tokens=150
+            max_tokens=250
         )
-        description = response.choices[0].message.content
-        print(f"🖼️ Description: {description}")
-        return description
-    except Exception as e:
-        print(f"❌ Image error: {e}")
-        return None
 
+        description = response.choices[0].message.content
+        print(f"🖼️ Hypothèse: {description}")
+        return description
+
+    except Exception as e:
+        print(f"❌ Image error: {type(e).__name__}: {e}")
+        return None
+        
 def transcribe_audio(media_url):
     try:
         print("⬇️ Téléchargement audio...")
@@ -538,3 +561,4 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+
