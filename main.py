@@ -34,6 +34,15 @@ Tu évalues le niveau d'urgence et structures TOUJOURS ta réponse finale ainsi:
 
 📋 Analyse: [symptômes identifiés + hypothèse probable]
 
+💊 En attendant le médecin:
+   • [conseil pratique 1 — automédication sûre]
+   • [conseil pratique 2 — hydratation, repos, etc.]
+   • [ce qu'il faut éviter]
+
+🏥 À la pharmacie, demandez:
+   • "[terme exact à utiliser]"
+   • Prix approximatif si connu (en CFA)
+
 👉 Action: [ce que l'utilisateur doit faire maintenant]
 
 📞 Qui contacter:
@@ -50,21 +59,28 @@ Tu évalues le niveau d'urgence et structures TOUJOURS ta réponse finale ainsi:
 Niveaux d'urgence:
 🟢 VERT — Soins à domicile
 → Symptômes légers, pas de danger immédiat
+→ Conseils pratiques suffisants
 
 🟡 JAUNE — Pharmacie ou médecin dans les 24h
 → Symptômes modérés qui nécessitent attention
+→ Donner automédication sûre en attendant
 
 🔴 ROUGE — URGENCE, soins immédiats requis
 → Symptômes graves ou potentiellement mortels
+→ Pas de conseil automédication — urgences seulement
 
-Règles:
-- Pendant les questions de suivi → pas de format structuré, juste la question
-- Format structuré UNIQUEMENT pour la réponse finale de triage
+Règles importantes:
+- Pendant les questions de suivi → pas de format, juste la question
+- Format structuré UNIQUEMENT pour la réponse finale
 - Maximum 2 questions avant de donner la réponse finale
-- Tenir compte des maladies fréquentes: paludisme, typhoïde, méningite, dengue
+- Section 💊 uniquement pour VERT et JAUNE — jamais pour ROUGE
+- Automédication: uniquement médicaments sans ordonnance
+  (paracétamol, SRO, antihistaminiques basiques)
+- Jamais recommander antibiotiques sans ordonnance
+- Prix en CFA quand possible (contexte Sénégal/Côte d'Ivoire)
+- Maladies fréquentes: paludisme, typhoïde, méningite, dengue, choléra
 - Si urgence évidente → ROUGE immédiatement sans questions
 - Toujours répondre en français"""
-
 # ── Emergency constants ────────────────────────────────────
 CRITICAL_KEYWORDS = [
     "ne respire pas", "arrêt cardiaque", "inconscient",
@@ -299,3 +315,4 @@ def webhook():
 # ── Run ────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+
