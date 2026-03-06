@@ -356,6 +356,34 @@ def is_location_request(sender, message):
     last = conversations[sender][-1]["content"].lower()
     return "pharmacie proche" in last or "besoin d'aide pour trouver" in last
 
+def get_location_message(choice):
+    if choice == "1":
+        return (
+            "🏥 *Trouver une pharmacie proche:*\n\n"
+            "Cliquez ce lien depuis votre téléphone:\n"
+            "👉 https://maps.google.com/?q=pharmacie\n\n"
+            "Ou ouvrez Google Maps et tapez:\n"
+            "• 'pharmacie' (Afrique)\n"
+            "• 'pharmacy' (Canada/France)\n\n"
+            "📞 Pharmacie ouverte 24h:\n"
+            "• Canada: tapez 'pharmacie 24h'\n"
+            "• Sénégal: tapez 'pharmacie de garde Dakar'"
+        )
+    elif choice == "2":
+        return (
+            "🏨 *Trouver un hôpital proche:*\n\n"
+            "Cliquez ce lien depuis votre téléphone:\n"
+            "👉 https://maps.google.com/?q=hôpital\n\n"
+            "Ou ouvrez Google Maps et tapez:\n"
+            "• 'hôpital' ou 'urgences'\n\n"
+            "📞 Numéros d'urgence:\n"
+            "• Canada:   911\n"
+            "• France:   15 (SAMU)\n"
+            "• Sénégal:  15\n"
+            "• Djibouti: 15"
+        )
+    return None
+
 def analyze_image(media_url):
     try:
         print("🖼️ Analyse image...")
@@ -541,41 +569,26 @@ def webhook():
         r.message(HANDOFF_RESPONSE)
         return str(r)
 
-    # ── Layer 3: Location request ───────────────────────────
+    # ── Layer 3: Location ───────────────────────────────────
     if is_location_request(sender, incoming_text):
         choice = incoming_text.strip()
-        if choice == "1":
-            location_response = (
-                "🏥 *Trouver une pharmacie:*\n\n"
-                "• Tapez sur Google Maps:\n"
-                "  'pharmacie près de moi'\n"
-                "• Ouvertes généralement 8h-20h\n"
-                "• Demandez à un voisin la plus proche"
-            )
-        elif choice == "2":
-            location_response = (
-                "🏨 *Trouver un hôpital:*\n\n"
-                "• Urgences → appelez le 15\n"
-                "• Tapez sur Google Maps:\n"
-                "  'hôpital près de moi'\n"
-                "• Un taxi peut vous y emmener"
-            )
-        else:
-            location_response = None
-        r = MessagingResponse()
-        if location_response:
-            r.message(location_response)
-        r.message(
+        location_msg = get_location_message(choice)
+
+        feedback_question = (
             "🙏 Cette réponse vous a-t-elle aidé?\n"
             "1️⃣ Oui\n"
             "2️⃣ Partiellement\n"
             "3️⃣ Non — je veux parler à quelqu'un"
         )
+        r = MessagingResponse()
+        if location_msg:
+            r.message(location_msg)
+            log_to_db(sender, "assistant", location_msg, triage_level="LOCATION")
+        r.message(feedback_question)
         conversations[sender].append({
             "role": "assistant",
-            "content": "Cette réponse vous a-t-elle aidé? 1 Oui 2 Partiellement 3 Non — je veux parler à quelqu'un"
+            "content": feedback_question
         })
-        log_to_db(sender, "assistant", location_response or "no_location", triage_level="LOCATION")
         return str(r)
 
     # ── Layer 3b: Feedback ──────────────────────────────────
