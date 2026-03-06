@@ -90,7 +90,7 @@ Si PEAU:
 ━━━━━━━━━━━━━━━━━━━━━━
 ÉCHANGE 4 — DIAGNOSTIC FINAL
 ━━━━━━━━━━━━━━━━━━━━━━
-[emoji niveau] [NIVEAU] — [titre simple]
+🟢/🟡/🔴 [condition simple]
 
 🔍 Ce que ça ressemble à: [explication simple, 1-2 phrases]
 
@@ -102,27 +102,32 @@ Si PEAU:
 🏥 À la pharmacie:
    • Demandez: "[mots exacts à dire au pharmacien]"
    • Prix: ~[montant] CFA
+   • 📍 Pharmacie proche: https://maps.google.com/?q=pharmacie
 
 📞 Consultez:
-   • [qui contacter, où aller]
-
-💬 Voulez-vous parler à quelqu'un? Répondez OUI
+   • [qui contacter]
+   • 📍 Hôpital proche: https://maps.google.com/?q=hopital
 
 ━━━━━━━━━━━━━━━━━━━━━━
 🙏 Cette réponse vous a-t-elle aidé?
 1️⃣ Oui
 2️⃣ Partiellement
-3️⃣ Non
+3️⃣ Non — je veux parler à quelqu'un
 
 Votre avis améliore WaziHealth 💚
 ━━━━━━━━━━━━━━━━━━━━━━
 
 ⚠️ Ceci ne remplace pas un médecin.
 
-NIVEAUX:
-🟢 VERT = restez à la maison, voici quoi faire
-🟡 JAUNE = pharmacie ou centre de santé dans 24h
-🔴 ROUGE = partez aux urgences maintenant
+NIVEAUX — format exact du titre:
+🟢 [condition simple]
+🟡 [condition simple]
+🔴 [condition simple]
+Exemples:
+🟢 Rhume ou fatigue passagère
+🟡 Possible paludisme
+🟡 Infection à consulter
+🔴 Symptômes graves — consultez maintenant
 
 URGENCES → ROUGE immédiat sans questions:
 - Ne répond pas / inconscient
@@ -325,10 +330,9 @@ def hash_sender(s):
     return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 def extract_triage_level(r):
-    u = r.upper()
-    if "ROUGE" in u or "🔴" in r: return "RED"
-    if "JAUNE" in u or "🟡" in r: return "YELLOW"
-    if "VERT"  in u or "🟢" in r: return "GREEN"
+    if "🔴" in r: return "RED"
+    if "🟡" in r: return "YELLOW"
+    if "🟢" in r: return "GREEN"
     return "PENDING"
 
 def detect_condition(ai_response):
