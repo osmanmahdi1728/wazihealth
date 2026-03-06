@@ -351,24 +351,8 @@ RESOURCES = {
 
 FEEDBACK_CHOICES = {"1": "utile", "2": "partiel", "3": "non_utile"}
 
-# ── Booking slots ──────────────────────────────────────────
-BOOKING_SLOTS = {
-    "1": {"label": "Demain matin",        "moment": "demain à 9h00"},
-    "2": {"label": "Demain après-midi",   "moment": "demain à 14h00"},
-    "3": {"label": "Dans 2 jours matin",  "moment": "dans 2 jours à 9h00"},
-}
-BOOKING_TIMES = {
-    "1": "9h00",
-    "2": "10h00",
-    "3": "11h00",
-}
-BOOKING_START_MSG = (
-    "📅 *Prendre rendez-vous*\n\n"
-    "Choisissez un jour:\n"
-    "1️⃣ Demain matin (9h-12h)\n"
-    "2️⃣ Demain après-midi (14h-17h)\n"
-    "3️⃣ Dans 2 jours matin (9h-12h)"
-)
+# ── Booking config ─────────────────────────────────────────
+BOOKING_TIMES = {"1": "9h00", "2": "10h00", "3": "11h00"}
 
 # ── Welcome audio ──────────────────────────────────────────
 WELCOME_AUDIO_URL = None
@@ -521,134 +505,73 @@ def is_feedback(sender, message):
     last = conversations[sender][-1]["content"].lower()
     return "cette réponse vous a-t-elle aidé" in last
 
-def is_booking_trigger(sender, message):
-    """Déclenche le flow booking sur mot-clé."""
-    triggers = [
-        "rendez-vous", "rdv", "rendez vous",
-        "consulter", "consultation", "prendre rdv",
-        "reserver", "réserver", "je veux un rdv"
-    ]
-    return message.lower().strip() in triggers
+# ── Booking functions ──────────────────────────────────────
+def get_available_slots():
+    """Récupère les créneaux disponibles depuis Supabase."""
+    try:
+        result = supabase.table("slots")\
+            .select("*")\
+            .eq("is_booked", False)\
+            .gte("date", str(date.today()))\
+            .order("date")\
+            .order("time")\
+            .limit(6)\
+            .execute()
+        return result.data or []
+    except Exception as e:
+        print(f"❌ Slots error: {e}")
+        return []
 
-def is_booking_day_selection(sender, message):
-    """Détecte sélection de jour dans le flow booking."""
-    if message.strip() not in ["1", "2", "3"]:
-        return False
-    if sender not in conversations or not conversations[sender]:
-        return False
-    last = conversations[sender][-1]["content"].lower()
-    return "choisissez un jour" in last
-
-def is_booking_time_selection(sender, message):
-    """Détecte sélection d'heure dans le flow booking."""
-    if message.strip() not in ["1", "2", "3"]:
-        return False
-    if sender not in conversations or not conversations[sender]:
-        return False
-    last = conversations[sender][-1]["content"].lower()
-    return "choisissez l'heure" in last or "choisissez une heure" in last
-
-def get_booking_day(sender):
-    """Récupère le jour choisi depuis la mémoire."""
-    for msg in reversed(conversations.get(sender, [])):
-        if msg.get("content", "").startswith("BOOKING_DAY:"):
-            return msg["content"].replace("BOOKING_DAY:", "")
-    return "demain"
-
-def confirm_booking(sender, day, time):
-    """Finalise le RDV — log + notifie médecin."""
-    booking_summary = f"{day} à {time}"
-    log_to_db(sender, "booking", booking_summary, triage_level="BOOKING")
-    notify_agent(sender,
-        f"📅 Nouveau RDV: {booking_summary}\n"
-        f"Patient: {hash_sender(sender)}"
-    )
-    return (
-        f"✅ *RDV confirmé!*\n\n"
-        f"📅 {day} à {time}\n"
-        f"📞 Le médecin vous appellera sur WhatsApp\n"
-        f"⏰ Rappel 30 min avant votre RDV\n\n"
-        f"Préparez:\n"
-        f"• Ce résumé de symptômes\n"
-        f"• Vos médicaments actuels\n\n"
-        f"Prenez soin de vous 💚"
-    )
-
-def get_booking_message():
-    """Génère le menu de créneaux depuis Supabase."""
+def get_booking_start_message():
+    """Génère le menu de créneaux dynamique depuis Supabase."""
     slots = get_available_slots()
     if not slots:
         return (
             "📅 Aucun créneau disponible pour le moment.\n\n"
             "Le médecin vous contactera dans les 24h.\n"
-            "Nous vous notifierons dès qu'un créneau est libre."
+            "Nous vous notifierons dès qu'un créneau se libère."
         ), []
     msg = "📅 *Prendre rendez-vous*\n\nChoisissez un créneau:\n"
     for i, slot in enumerate(slots[:5], 1):
         msg += f"{i}️⃣ {slot['date']} à {slot['time']}\n"
     return msg, slots
 
-def book_slot(sender, slot_id, slot_date, slot_time, symptoms):
-    """Réserve un créneau et log le RDV."""
-    supabase.table("slots")\
-        .update({"is_booked": True})\
-        .eq("id", slot_id)\
-        .execute()
-    supabase.table("appointments").insert({
-        "session_hash":  hash_sender(sender),
-        "slot_id":       slot_id,
-        "date":          slot_date,
-        "time":          slot_time,
-        "triage_level":  "YELLOW",
-        "symptoms":      symptoms,
-        "status":        "confirmed"
-    }).execute()
-    notify_agent(sender,
-        f"📅 Nouveau RDV: {slot_date} à {slot_time}\n"
-        f"Symptômes: {symptoms[:100]}"
-    )
-
-def send_queue_to_doctor():
-    """Envoie la file d'attente du jour au médecin."""
-    appointments = supabase.table("appointments")\
-        .select("*")\
-        .eq("date", str(date.today()))\
-        .eq("status", "confirmed")\
-        .order("time")\
-        .execute()\
-        .data
-
-    if not appointments:
-        return
-
-    msg = f"📋 *FILE D'ATTENTE — {INSTITUTION_NAME}*\n"
-    msg += f"{'━'*25}\n\n"
-
-    for apt in appointments:
-        emoji = "🔴" if apt["triage_level"] == "RED" else "🟡"
-        msg += (
-            f"{emoji} {apt['time']} — Patient #{apt['session_hash'][:4].upper()}\n"
-            f"   Symptômes: {apt['symptoms'][:80]}\n\n"
+def book_slot(sender, slot, symptoms):
+    """Réserve un créneau — Supabase + notifie médecin."""
+    try:
+        supabase.table("slots")\
+            .update({"is_booked": True})\
+            .eq("id", slot["id"])\
+            .execute()
+        supabase.table("appointments").insert({
+            "session_hash": hash_sender(sender),
+            "slot_id":      slot["id"],
+            "date":         slot["date"],
+            "time":         slot["time"],
+            "triage_level": "YELLOW",
+            "symptoms":     symptoms[:200],
+            "status":       "confirmed"
+        }).execute()
+        print(f"✅ RDV créé: {slot['date']} à {slot['time']}")
+        notify_agent(
+            sender,
+            f"📅 Nouveau RDV: {slot['date']} à {slot['time']}\n"
+            f"Symptômes: {symptoms[:100]}"
         )
+        return True
+    except Exception as e:
+        print(f"❌ Booking error: {e}")
+        return False
 
-    if AGENT_NUMBER:
-        try:
-            twilio_client.messages.create(
-                from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
-                to=AGENT_NUMBER,
-                body=msg
-            )
-            print("✅ File d'attente envoyée au médecin")
-        except Exception as e:
-            print(f"❌ Queue send error: {e}")
-
-def parse_doctor_availability(message, doctor_id):
-    """Parse 'DISPO demain 9h 10h 14h' et crée les slots."""
+def parse_doctor_availability(message):
+    """Parse 'DISPO demain 9h 10h 14h' → crée les slots."""
     msg = message.lower()
     if "demain" in msg:
         target_date = date.today() + timedelta(days=1)
-    elif "aujourd'hui" in msg:
+    elif "aujourd'hui" in msg or "auj" in msg:
         target_date = date.today()
+    elif "dans 2" in msg:
+        target_date = date.today() + timedelta(days=2)
     else:
         return None
     times = re.findall(r'\d+h\d*', msg)
@@ -656,24 +579,79 @@ def parse_doctor_availability(message, doctor_id):
         return None
     for t in times:
         supabase.table("slots").insert({
-            "doctor_id": doctor_id,
+            "doctor_id": "default",
             "date":      str(target_date),
             "time":      t,
             "is_booked": False
         }).execute()
-    return f"✅ {len(times)} créneaux ajoutés pour {target_date}"
+    return f"✅ {len(times)} créneau(x) ajouté(s) pour le {target_date}"
 
-def get_available_slots():
-    """Récupère les créneaux disponibles."""
-    result = supabase.table("slots")\
-        .select("*")\
-        .eq("is_booked", False)\
-        .gte("date", str(date.today()))\
-        .order("date")\
-        .order("time")\
-        .limit(6)\
-        .execute()
-    return result.data
+def send_queue_to_doctor():
+    """Envoie la file d'attente du jour au médecin à 8h."""
+    try:
+        appointments = supabase.table("appointments")\
+            .select("*")\
+            .eq("date", str(date.today()))\
+            .eq("status", "confirmed")\
+            .order("time")\
+            .execute()\
+            .data
+        if not appointments:
+            print("📋 Aucun RDV aujourd'hui")
+            return
+        msg = f"📋 *FILE D'ATTENTE — {INSTITUTION_NAME}*\n"
+        msg += f"{'━'*25}\n\n"
+        msg += f"📅 {date.today().strftime('%d/%m/%Y')}\n\n"
+        for apt in appointments:
+            emoji = "🔴" if apt["triage_level"] == "RED" else "🟡"
+            patient_id = apt["session_hash"][:4].upper()
+            msg += (
+                f"{emoji} {apt['time']} — Patient #{patient_id}\n"
+                f"   {apt['symptoms'][:80]}\n\n"
+            )
+        msg += "━"*25
+        if AGENT_NUMBER:
+            twilio_client.messages.create(
+                from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+                to=AGENT_NUMBER,
+                body=msg
+            )
+            print(f"✅ File d'attente envoyée: {len(appointments)} RDV")
+    except Exception as e:
+        print(f"❌ Queue error: {e}")
+
+def is_booking_trigger(message):
+    triggers = [
+        "rendez-vous", "rdv", "rendez vous", "consulter",
+        "consultation", "prendre rdv", "reserver",
+        "réserver", "je veux un rdv", "prendre rendez"
+    ]
+    return message.lower().strip() in triggers
+
+def is_booking_slot_selection(sender, message):
+    """Sélection d'un créneau dans la liste."""
+    if not message.strip().isdigit():
+        return False
+    if sender not in conversations or not conversations[sender]:
+        return False
+    last = conversations[sender][-1]["content"].lower()
+    return "prendre rendez-vous" in last and "choisissez un créneau" in last
+
+def is_doctor_dispo(message):
+    """Médecin envoie ses disponibilités."""
+    return message.upper().startswith("DISPO")
+
+def is_doctor_treated(message):
+    """Médecin marque un patient comme traité."""
+    return message.upper().startswith("TRAITÉ") or message.upper().startswith("TRAITE")
+
+def get_symptoms_summary(sender):
+    """Extrait le résumé des symptômes depuis la mémoire."""
+    symptom_msgs = [
+        m["content"] for m in conversations.get(sender, [])
+        if m.get("role") == "user" and len(m["content"]) > 3
+    ]
+    return " | ".join(symptom_msgs[-3:]) if symptom_msgs else "Non précisé"
 
 def is_location_request(sender, message):
     """Détecte si l'utilisateur cherche pharmacie ou hôpital."""
@@ -904,9 +882,8 @@ def webhook():
         return str(r)
 
     # ── Doctor DISPO management ─────────────────────────────
-    if incoming_text.upper().startswith("DISPO"):
-        doctor_id = hash_sender(sender)
-        result = parse_doctor_availability(incoming_text, doctor_id)
+    if is_doctor_dispo(incoming_text):
+        result = parse_doctor_availability(incoming_text)
         r = MessagingResponse()
         if result:
             r.message(result)
@@ -918,6 +895,11 @@ def webhook():
         send_queue_to_doctor()
         r = MessagingResponse()
         r.message("📋 File d'attente envoyée!")
+        return str(r)
+
+    if is_doctor_treated(incoming_text):
+        r = MessagingResponse()
+        r.message("✅ Patient marqué comme traité.")
         return str(r)
 
     # ── Layer 1: Urgence critique ───────────────────────────
@@ -940,12 +922,9 @@ def webhook():
         return str(r)
 
     # ── Layer 2b: Booking trigger ───────────────────────────
-    if is_booking_trigger(sender, incoming_text):
+    if is_booking_trigger(incoming_text):
         r = MessagingResponse()
-        try:
-            slot_msg, slots = get_booking_message()
-        except Exception:
-            slot_msg, slots = BOOKING_START_MSG, []
+        slot_msg, slots = get_booking_start_message()
         if slots:
             conversations[sender].append({"role": "system", "content": "BOOKING_SLOTS:" + ",".join(s["id"] for s in slots)})
         conversations[sender].append({"role": "assistant", "content": slot_msg})
@@ -954,7 +933,7 @@ def webhook():
         return str(r)
 
     # ── Layer 2c: Booking — sélection du créneau ────────────
-    if is_booking_day_selection(sender, incoming_text):
+    if is_booking_slot_selection(sender, incoming_text):
         choice = incoming_text.strip()
         stored_slots = None
         for msg in reversed(conversations.get(sender, [])):
@@ -968,54 +947,27 @@ def webhook():
                 try:
                     slot_data = supabase.table("slots").select("*").eq("id", slot_id).single().execute()
                     s = slot_data.data
-                    symptoms = ""
-                    for msg in reversed(conversations.get(sender, [])):
-                        if msg.get("role") == "user" and msg.get("content", "") not in ["1","2","3","4","5"]:
-                            symptoms = msg["content"]
-                            break
-                    book_slot(sender, slot_id, s["date"], s["time"], symptoms)
-                    confirmation = confirm_booking(sender, s["date"], s["time"])
-                    r = MessagingResponse()
-                    r.message(confirmation)
-                    conversations[sender].append({"role": "assistant", "content": confirmation})
-                    conversations.pop(sender, None)
-                    return str(r)
+                    symptoms = get_symptoms_summary(sender)
+                    if book_slot(sender, s, symptoms):
+                        confirmation = (
+                            f"✅ *RDV confirmé!*\n\n"
+                            f"📅 {s['date']} à {s['time']}\n"
+                            f"📞 Le médecin vous appellera sur WhatsApp\n"
+                            f"⏰ Rappel 30 min avant votre RDV\n\n"
+                            f"Préparez:\n"
+                            f"• Ce résumé de symptômes\n"
+                            f"• Vos médicaments actuels\n\n"
+                            f"Prenez soin de vous 💚"
+                        )
+                        r = MessagingResponse()
+                        r.message(confirmation)
+                        conversations[sender].append({"role": "assistant", "content": confirmation})
+                        conversations.pop(sender, None)
+                        return str(r)
                 except Exception as e:
                     print(f"❌ Booking DB error: {e}")
-            r = MessagingResponse()
-            r.message("Ce créneau n'est plus disponible. Répondez *RENDEZ-VOUS* pour voir les créneaux actuels.")
-            return str(r)
-        slot = BOOKING_SLOTS.get(choice)
-        if not slot:
-            r = MessagingResponse()
-            r.message("Répondez 1, 2 ou 3 svp.")
-            return str(r)
-        conversations[sender].append({"role": "system", "content": f"BOOKING_DAY:{slot['label']}"})
-        time_msg = (
-            f"✅ {slot['label']} — choisissez l'heure:\n\n"
-            "1️⃣ 9h00\n"
-            "2️⃣ 10h00\n"
-            "3️⃣ 11h00"
-        )
         r = MessagingResponse()
-        r.message(time_msg)
-        conversations[sender].append({"role": "assistant", "content": time_msg})
-        return str(r)
-
-    # ── Layer 2d: Booking — sélection de l'heure (fallback) ─
-    if is_booking_time_selection(sender, incoming_text):
-        choice   = incoming_text.strip()
-        time     = BOOKING_TIMES.get(choice)
-        day      = get_booking_day(sender)
-        if not time:
-            r = MessagingResponse()
-            r.message("Répondez 1, 2 ou 3 svp.")
-            return str(r)
-        confirmation = confirm_booking(sender, day, time)
-        r = MessagingResponse()
-        r.message(confirmation)
-        conversations[sender].append({"role": "assistant", "content": confirmation})
-        conversations.pop(sender, None)
+        r.message("Ce créneau n'est plus disponible. Répondez *RENDEZ-VOUS* pour voir les créneaux actuels.")
         return str(r)
 
     # ── Layer 3: Location ───────────────────────────────────
