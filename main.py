@@ -1,13 +1,19 @@
 import os
+import hashlib
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
+from supabase import create_client
 
 # ── App setup ──────────────────────────────────────────────
 app = Flask(__name__)
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+supabase = create_client(
+    os.environ.get("SUPABASE_URL"),
+    os.environ.get("SUPABASE_KEY")
+)
 
-# ── Conversation memory ────────────────────────────────────
+# ── Conversation memory (in-RAM) ───────────────────────────
 conversations = {}
 MAX_HISTORY = 10
 
@@ -28,26 +34,17 @@ Pour chaque situation tu évalues le niveau d'urgence toi-même:
 🔴 ROUGE — URGENCE, soins immédiats requis
 → Symptômes graves ou potentiellement mortels
 → Envoie immédiatement aux urgences
-→ Exemples: douleur thoracique, difficulté à respirer,
-  perte de connaissance, saignement grave, convulsions,
-  fièvre très élevée chez un nourrisson, symptômes d'AVC
 
 Processus:
-1. Si les symptômes sont clairement une urgence → ROUGE immédiatement
+1. Si urgence évidente → ROUGE immédiatement
 2. Sinon → pose maximum 2 questions pour clarifier
 3. Après les questions → donne ton évaluation avec le niveau
 
-Format de réponse pour le triage final:
-[niveau emoji] [niveau texte]
-[explication courte]
-[action recommandée]
+Contexte: maladies fréquentes en Afrique de l'Ouest
+(paludisme, typhoïde, méningite, choléra, dengue).
+Toujours terminer par: "Ceci n'est pas un avis médical professionnel." """
 
-Ceci n'est pas un avis médical professionnel.
-
-Contexte: tiens compte des maladies fréquentes en Afrique de l'Ouest 
-(paludisme, typhoïde, méningite, choléra, dengue)."""
-
-# ── Hard safety layer — obvious emergencies only ───────────
+# ── Safety layer ───────────────────────────────────────────
 CRITICAL_KEYWORDS = [
     "ne respire pas", "arrêt cardiaque", "inconscient",
     "ne répond plus", "overdose", "empoisonnement"
@@ -64,6 +61,37 @@ Ne restez pas seul(e).
 def is_critical(message):
     message_lower = message.lower()
     return any(keyword in message_lower for keyword in CRITICAL_KEYWORDS)
+
+# ── Helper: anonymize phone number ────────────────────────
+def hash_sender(sender):
+    """Hash phone number for privacy — we never store real numbers."""
+    return hashlib.sha256(sender.encode()).hexdigest()[:16]
+
+# ── Helper: detect triage level from AI response ──────────
+def extract_triage_level(ai_response):
+    response_upper = ai_response.upper()
+    if "ROUGE" in response_upper or "🔴" in ai_response:
+        return "RED"
+    elif "JAUNE" in response_upper or "🟡" in ai_response:
+        return "YELLOW"
+    elif "VERT" in response_upper or "🟢" in ai_response:
+        return "GREEN"
+    return "UNKNOWN"
+
+# ── Helper: log message to Supabase ───────────────────────
+def log_to_db(sender, role, content, triage_level=None, is_emergency=False):
+    try:
+        supabase.table("consultations").insert({
+            "session_id":      hash_sender(sender),
+            "sender_hash":     hash_sender(sender),
+            "message_role":    role,
+            "message_content": content,
+            "triage_level":    triage_level,
+            "is_emergency":    is_emergency,
+        }).execute()
+    except Exception as e:
+        print(f"⚠️ DB log error: {e}")
+        # Never crash the bot because of a DB error
 
 # ── AI response with memory ────────────────────────────────
 def get_ai_response(sender, user_message):
@@ -86,7 +114,7 @@ def get_ai_response(sender, user_message):
             model="gpt-4o-mini",
             messages=messages,
             max_tokens=350,
-            temperature=0.2  # lower = more consistent medical responses
+            temperature=0.2
         )
 
         ai_reply = completion.choices[0].message.content
@@ -115,22 +143,34 @@ def webhook():
     incoming_message = request.form.get("Body", "").strip()
     sender = request.form.get("From", "")
 
-    print(f"📩 Message de {sender}: {incoming_message}")
+    print(f"📩 Message de {hash_sender(sender)}: {incoming_message}")
 
-    # Layer 1 — instant critical emergency bypass
+    # Log user message to database
+    log_to_db(sender, "user", incoming_message)
+
+    # Layer 1 — critical emergency bypass
     if is_critical(incoming_message):
-        print(f"🚨 CRITIQUE détecté de {sender}")
+        print(f"🚨 CRITIQUE détecté")
+        log_to_db(sender, "assistant", EMERGENCY_RESPONSE,
+                  triage_level="RED", is_emergency=True)
         conversations.pop(sender, None)
         response = MessagingResponse()
         response.message(EMERGENCY_RESPONSE)
         return str(response)
 
-    # Layer 2 — AI evaluates everything else including urgency
+    # Layer 2 — AI triage
     ai_response = get_ai_response(sender, incoming_message)
-    print(f"🤖 Réponse AI: {ai_response[:100]}...")
+    triage_level = extract_triage_level(ai_response)
+
+    # Log AI response to database
+    log_to_db(sender, "assistant", ai_response, triage_level=triage_level)
+
+    print(f"🤖 Triage: {triage_level}")
+
     response = MessagingResponse()
     response.message(ai_response)
     return str(response)
 
+# ── Run ────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
