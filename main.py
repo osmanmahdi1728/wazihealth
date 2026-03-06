@@ -593,8 +593,9 @@ def webhook():
             r.message("Envoyez un texte, une photo 📸 ou un message vocal 🎤")
             return str(r)
 
-    # ── Message vide ────────────────────────────────────────
-    if not incoming_text:
+    # ── Message vide OU salutation ───────────────────────────
+    GREETINGS = ["bonjour", "bonsoir", "salut", "hello", "hi", "allo", "allô", "salam"]
+    if not incoming_text or incoming_text.lower().strip() in GREETINGS:
         r = MessagingResponse()
         r.message(
             "👋 Bonjour! Je suis WaziHealth 🏥\n\n"
