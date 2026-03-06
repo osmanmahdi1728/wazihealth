@@ -21,30 +21,48 @@ MAX_HISTORY = 10
 SYSTEM_PROMPT = """Tu es WaziHealth, un assistant de triage médical 
 bienveillant pour l'Afrique de l'Ouest francophone.
 
-Pour chaque situation tu évalues le niveau d'urgence toi-même:
+Tu évalues le niveau d'urgence et structures TOUJOURS ta réponse finale ainsi:
 
+[niveau emoji] [NIVEAU] — [titre court]
+
+📋 Analyse: [symptômes identifiés + hypothèse probable]
+
+👉 Action: [ce que l'utilisateur doit faire maintenant]
+
+📞 Qui contacter:
+   • [option 1]
+   • [option 2]
+
+💬 Voulez-vous parler à un agent humain?
+   Répondez *OUI* pour être mis en contact.
+
+⚠️ Ceci n'est pas un avis médical professionnel.
+
+---
+
+Niveaux d'urgence:
 🟢 VERT — Soins à domicile
 → Symptômes légers, pas de danger immédiat
 → Donne des conseils pratiques simples
 
-🟡 JAUNE — Pharmacie ou médecin dans les 24h  
+🟡 JAUNE — Pharmacie ou médecin dans les 24h
 → Symptômes modérés qui nécessitent attention
 → Recommande une consultation ou un test
 
 🔴 ROUGE — URGENCE, soins immédiats requis
 → Symptômes graves ou potentiellement mortels
-→ Envoie immédiatement aux urgences
+→ Dirige immédiatement vers les urgences
 
-Processus:
-1. Si urgence évidente → ROUGE immédiatement
-2. Sinon → pose maximum 2 questions pour clarifier
-3. Après les questions → donne ton évaluation avec le niveau
+Règles importantes:
+- Pendant les questions de suivi → pas de format structuré, juste la question
+- Format structuré UNIQUEMENT pour la réponse finale de triage
+- Maximum 2 questions avant de donner la réponse finale
+- Tenir compte des maladies fréquentes en Afrique de l'Ouest:
+  paludisme, typhoïde, méningite, choléra, dengue
+- Si urgence évidente → ROUGE immédiatement sans questions
+- Toujours répondre en français"""
 
-Contexte: maladies fréquentes en Afrique de l'Ouest
-(paludisme, typhoïde, méningite, choléra, dengue).
-Toujours terminer par: "Ceci n'est pas un avis médical professionnel." """
-
-# ── Safety layer ───────────────────────────────────────────
+# ── Critical emergency keywords ────────────────────────────
 CRITICAL_KEYWORDS = [
     "ne respire pas", "arrêt cardiaque", "inconscient",
     "ne répond plus", "overdose", "empoisonnement"
@@ -52,15 +70,22 @@ CRITICAL_KEYWORDS = [
 
 EMERGENCY_RESPONSE = """🔴 URGENCE MÉDICALE CRITIQUE
 
-Appelez le 15 (SAMU) ou les urgences IMMÉDIATEMENT.
+Ce que vous décrivez nécessite une aide médicale IMMÉDIATE.
 
-Ne restez pas seul(e).
+👉 Appelez le 15 (SAMU) ou rendez-vous aux urgences les plus proches MAINTENANT.
 
-*Ceci n'est pas un avis médical professionnel.*"""
+Ne restez pas seul(e). Demandez à quelqu'un de vous accompagner.
 
-def is_critical(message):
-    message_lower = message.lower()
-    return any(keyword in message_lower for keyword in CRITICAL_KEYWORDS)
+⚠️ Ceci n'est pas un avis médical professionnel."""
+
+HANDOFF_RESPONSE = """👤 *Transfert vers un agent humain*
+
+Un agent WaziHealth va vous contacter dans les plus brefs délais.
+
+📞 Vous pouvez aussi nous appeler directement:
+*+221 XX XXX XX XX*
+
+Merci de votre confiance. 🙏"""
 
 # ── Helper: anonymize phone number ────────────────────────
 def hash_sender(sender):
@@ -76,7 +101,7 @@ def extract_triage_level(ai_response):
         return "YELLOW"
     elif "VERT" in response_upper or "🟢" in ai_response:
         return "GREEN"
-    return "UNKNOWN"
+    return "PENDING"
 
 # ── Helper: log message to Supabase ───────────────────────
 def log_to_db(sender, role, content, triage_level=None, is_emergency=False):
@@ -91,7 +116,21 @@ def log_to_db(sender, role, content, triage_level=None, is_emergency=False):
         }).execute()
     except Exception as e:
         print(f"⚠️ DB log error: {e}")
-        # Never crash the bot because of a DB error
+
+# ── Helper: check if user is requesting human handoff ─────
+def is_handoff_request(sender, message):
+    """Returns True if user said OUI after bot offered human agent."""
+    if message.strip().upper() not in ["OUI", "OUI.", "OUI!"]:
+        return False
+    if sender not in conversations or len(conversations[sender]) == 0:
+        return False
+    last_bot_message = conversations[sender][-1]["content"]
+    return "agent humain" in last_bot_message.lower()
+
+# ── Helper: check for critical emergency ──────────────────
+def is_critical(message):
+    message_lower = message.lower()
+    return any(keyword in message_lower for keyword in CRITICAL_KEYWORDS)
 
 # ── AI response with memory ────────────────────────────────
 def get_ai_response(sender, user_message):
@@ -113,7 +152,7 @@ def get_ai_response(sender, user_message):
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
-            max_tokens=350,
+            max_tokens=400,
             temperature=0.2
         )
 
@@ -148,7 +187,7 @@ def webhook():
     # Log user message to database
     log_to_db(sender, "user", incoming_message)
 
-    # Layer 1 — critical emergency bypass
+    # ── Layer 1: Critical emergency bypass ─────────────────
     if is_critical(incoming_message):
         print(f"🚨 CRITIQUE détecté")
         log_to_db(sender, "assistant", EMERGENCY_RESPONSE,
@@ -158,14 +197,23 @@ def webhook():
         response.message(EMERGENCY_RESPONSE)
         return str(response)
 
-    # Layer 2 — AI triage
+    # ── Layer 2: Human handoff request ─────────────────────
+    if is_handoff_request(sender, incoming_message):
+        print(f"👤 Handoff demandé par {hash_sender(sender)}")
+        log_to_db(sender, "system", "HUMAN_HANDOFF_REQUESTED",
+                  triage_level="HANDOFF")
+        conversations.pop(sender, None)
+        response = MessagingResponse()
+        response.message(HANDOFF_RESPONSE)
+        return str(response)
+
+    # ── Layer 3: Normal AI triage ───────────────────────────
     ai_response = get_ai_response(sender, incoming_message)
     triage_level = extract_triage_level(ai_response)
 
-    # Log AI response to database
     log_to_db(sender, "assistant", ai_response, triage_level=triage_level)
 
-    print(f"🤖 Triage: {triage_level}")
+    print(f"🤖 Triage: {triage_level} | {ai_response[:80]}...")
 
     response = MessagingResponse()
     response.message(ai_response)
