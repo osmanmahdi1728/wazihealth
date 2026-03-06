@@ -284,10 +284,10 @@ def detect_condition(ai_response):
         "paludisme_enfant":  ["paludisme enfant", "malaria enfant", "paludisme bébé"],
         "paludisme":         ["paludisme", "malaria", "tdr"],
         "typhoide":          ["typhoïde", "typhoide", "fièvre typhoïde"],
-        "diarrhee":          ["diarrhée", "diarrhee", "gastro", "sro"],
+        "diarrhee":          ["diarrhée", " diarrhee ", "gastro-entérite", " sro "],
         "meningite":         ["méningite", "meningite"],
         "dengue":            ["dengue"],
-        "grippe":            ["grippe", "influenza", "rhume"],
+        "grippe":            ["grippe", "influenza"],
         "deshydratation":    ["déshydratation", "deshydratation"],
         "cholera":           ["choléra", "cholera"],
         "tuberculose":       ["tuberculose", "tb pulmonaire"],
@@ -360,20 +360,18 @@ def get_location_message(choice):
     if choice == "1":
         return (
             "🏥 *Trouver une pharmacie proche:*\n\n"
-            "Cliquez ce lien depuis votre téléphone:\n"
             "👉 https://maps.google.com/?q=pharmacie\n\n"
             "Ou ouvrez Google Maps et tapez:\n"
             "• 'pharmacie' (Afrique)\n"
             "• 'pharmacy' (Canada/France)\n\n"
-            "📞 Pharmacie ouverte 24h:\n"
+            "📞 Pharmacie 24h:\n"
             "• Canada: tapez 'pharmacie 24h'\n"
             "• Sénégal: tapez 'pharmacie de garde Dakar'"
         )
     elif choice == "2":
         return (
             "🏨 *Trouver un hôpital proche:*\n\n"
-            "Cliquez ce lien depuis votre téléphone:\n"
-            "👉 https://maps.google.com/?q=hôpital\n\n"
+            "👉 https://maps.google.com/?q=hopital\n\n"
             "Ou ouvrez Google Maps et tapez:\n"
             "• 'hôpital' ou 'urgences'\n\n"
             "📞 Numéros d'urgence:\n"
@@ -545,11 +543,26 @@ def webhook():
     # ── Message vide ────────────────────────────────────────
     if not incoming_text:
         r = MessagingResponse()
-        r.message("👋 Bonjour! Je suis WaziHealth.\nDites-moi ce qui ne va pas — texte, photo 📸 ou vocal 🎤")
+        r.message(
+            "👋 Bonjour! Je suis WaziHealth 🏥\n\n"
+            "Je peux vous aider à:\n"
+            "• 🤒 Comprendre vos symptômes\n"
+            "• 💊 Savoir quoi faire en attendant le médecin\n"
+            "• 🏥 Trouver une pharmacie ou un hôpital proche\n\n"
+            "Dites-moi ce qui ne va pas\n"
+            "— texte, photo 📸 ou vocal 🎤"
+        )
         return str(r)
 
     print(f"📩 {hash_sender(sender)}: {incoming_text}")
     log_to_db(sender, "user", incoming_text)
+
+    # ── Reset session ───────────────────────────────────────
+    if incoming_text.lower() in ["reset", "recommencer", "nouvelle consultation"]:
+        conversations.pop(sender, None)
+        r = MessagingResponse()
+        r.message("🔄 Nouvelle consultation.\n\nBonjour! Dites-moi ce qui ne va pas 🏥")
+        return str(r)
 
     # ── Layer 1: Urgence critique ───────────────────────────
     if is_critical(incoming_text):
