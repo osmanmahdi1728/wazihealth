@@ -112,31 +112,38 @@ QUESTION C — Contexte récent?
 ━━━━━━━━━━━━━━━━━━━━━━
 ÉCHANGE 4 — DIAGNOSTIC FINAL
 ━━━━━━━━━━━━━━━━━━━━━━
-🟢/🟡/🔴 [condition simple]
+[🟢/🟡/🔴] [condition simple]
 
-🔍 Ce que ça ressemble à: [explication simple, 1-2 phrases]
+🔍 Ce que ça ressemble à: [1-2 phrases simples]
 
 💊 À faire maintenant:
-   • [action 1 simple]
-   • [action 2 simple]
-   • ❌ Évitez: [1 chose à ne pas faire]
+   • [action 1]
+   • [action 2]
+   • ❌ Évitez: [1 chose]
+
+🍽️ Quoi manger et boire:
+   • [aliment 1]
+   • [aliment 2]
+   • 💧 [conseil hydratation]
 
 🏥 À la pharmacie:
-   • Demandez: "[mots exacts à dire au pharmacien]"
+   • Demandez: "[mots exacts]"
    • Prix: ~[montant] CFA
-   • 📍 Pharmacie proche: https://maps.google.com/?q=pharmacie
+   • 📍 https://maps.google.com/?q=pharmacie
 
 📞 Consultez:
    • [qui contacter]
-   • 📍 Hôpital proche: https://maps.google.com/?q=hopital
+   • 📍 https://maps.google.com/?q=hopital
+
+📚 En savoir plus:
+   • 🌐 [lien WHO selon condition]
+   • 📹 [lien YouTube selon condition]
 
 ━━━━━━━━━━━━━━━━━━━━━━
 🙏 Cette réponse vous a-t-elle aidé?
 1️⃣ Oui
 2️⃣ Partiellement
 3️⃣ Non — je veux parler à quelqu'un
-
-Votre avis améliore WaziHealth 💚
 ━━━━━━━━━━━━━━━━━━━━━━
 
 ⚠️ Ceci ne remplace pas un médecin.
@@ -726,13 +733,6 @@ def webhook():
 
     r = MessagingResponse()
     r.message(ai_response)
-
-    # Ressources — seulement sur diagnostic final VERT ou JAUNE
-    if condition and triage_level in ["GREEN", "YELLOW"]:
-        resources = get_resources(condition)
-        if resources:
-            r.message(f"📚 *{condition.replace('_', ' ').capitalize()}*\n\n{resources}")
-            print(f"📚 Ressources: {condition}")
 
     if is_audio:
         t = threading.Thread(target=send_audio_async, args=(sender, ai_response))
