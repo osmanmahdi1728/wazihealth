@@ -148,6 +148,8 @@ DIAGNOSTIC FINAL — FORMAT PAR NIVEAU
    • 📹 [lien YouTube]
 
 ━━━━━━━━━━━━━━━━━━━━━━
+💬 Besoin d'aide supplémentaire?
+   Répondez *AGENT* pour parler à quelqu'un
 🙏 Cette réponse vous a-t-elle aidé?
 1️⃣ Oui   2️⃣ Partiellement   3️⃣ Non
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -175,15 +177,16 @@ DIAGNOSTIC FINAL — FORMAT PAR NIVEAU
    • Profil: [âge/situation]
 
 📅 Prenez rendez-vous:
-   Répondez *RENDEZ-VOUS* pour réserver
-   votre créneau directement ici
-   OU: {BOOKING_LINK}
+   Répondez *RENDEZ-VOUS* pour choisir
+   un créneau directement ici
 
 📚 En savoir plus:
    • 🌐 [lien WHO]
    • 📹 [lien YouTube]
 
 ━━━━━━━━━━━━━━━━━━━━━━
+💬 Besoin d'aide supplémentaire?
+   Répondez *AGENT* pour parler à quelqu'un
 🙏 Cette réponse vous a-t-elle aidé?
 1️⃣ Oui   2️⃣ Partiellement   3️⃣ Non
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -630,12 +633,10 @@ def is_booking_trigger(message):
 
 def is_booking_slot_selection(sender, message):
     """Sélection d'un créneau dans la liste."""
-    if not message.strip().isdigit():
-        return False
-    if sender not in conversations or not conversations[sender]:
-        return False
+    if not message.strip().isdigit(): return False
+    if sender not in conversations or not conversations[sender]: return False
     last = conversations[sender][-1]["content"].lower()
-    return "prendre rendez-vous" in last and "choisissez un créneau" in last
+    return "choisissez un créneau" in last
 
 def is_doctor_dispo(message):
     """Médecin envoie ses disponibilités."""
@@ -644,6 +645,10 @@ def is_doctor_dispo(message):
 def is_doctor_treated(message):
     """Médecin marque un patient comme traité."""
     return message.upper().startswith("TRAITÉ") or message.upper().startswith("TRAITE")
+
+def is_agent_request(message):
+    """Détecte si le patient veut parler à un agent."""
+    return message.strip().upper() in ["AGENT", "PARLER", "HUMAIN", "AIDE"]
 
 def get_symptoms_summary(sender):
     """Extrait le résumé des symptômes depuis la mémoire."""
@@ -849,16 +854,27 @@ def webhook():
     # ── Message vide OU salutation ───────────────────────────
     GREETINGS = ["bonjour", "bonsoir", "salut", "hello", "hi", "allo", "allô", "salam"]
     if not incoming_text or incoming_text.lower().strip() in GREETINGS:
-        r = MessagingResponse()
-        r.message(
-            "👋 Bonjour! Je suis WaziHealth 🏥\n\n"
+        profile_question = (
+            "👋 Bonjour! Je suis l'assistant de WaziHealth 🏥\n\n"
             "Je peux vous aider à:\n"
             "• 🤒 Comprendre vos symptômes\n"
             "• 💊 Savoir quoi faire en attendant le médecin\n"
             "• 🏥 Trouver une pharmacie ou un hôpital proche\n\n"
-            "Dites-moi ce qui ne va pas\n"
-            "— texte, photo 📸 ou vocal 🎤"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Qui consulte aujourd'hui?\n\n"
+            "1️⃣ Adulte (18-60 ans) — bonne santé générale\n"
+            "2️⃣ Enfant (2-17 ans)\n"
+            "3️⃣ Personne âgée (60 ans et plus)\n"
+            "4️⃣ Autre profil (enceinte, maladie chronique...)"
         )
+        r = MessagingResponse()
+        r.message(profile_question)
+        if sender not in conversations:
+            conversations[sender] = []
+        conversations[sender].append({
+            "role": "assistant",
+            "content": profile_question
+        })
         send_welcome_audio(sender)
         return str(r)
 
@@ -921,7 +937,25 @@ def webhook():
         r.message(HANDOFF_RESPONSE)
         return str(r)
 
-    # ── Layer 2b: Booking trigger ───────────────────────────
+    # ── Layer 2b: Demande agent direct ─────────────────────
+    if is_agent_request(incoming_text):
+        print("👤 Agent request direct")
+        agent_msg = (
+            "👤 *Mise en contact avec un agent*\n\n"
+            "Un agent WaziHealth vous contactera bientôt\n"
+            "sur ce numéro WhatsApp.\n\n"
+            "📞 Ou appelez directement:\n"
+            f"*{os.environ.get('AGENT_PHONE', '+221 XX XXX XX XX')}*\n\n"
+            "Merci de votre confiance 🙏"
+        )
+        log_to_db(sender, "system", "AGENT_REQUESTED_DIRECT", triage_level="HANDOFF")
+        notify_agent(sender, f"Patient demande agent après diagnostic\nDernier message: {incoming_text}")
+        conversations.pop(sender, None)
+        r = MessagingResponse()
+        r.message(agent_msg)
+        return str(r)
+
+    # ── Layer 2c: Booking trigger ──────────────────────────
     if is_booking_trigger(incoming_text):
         r = MessagingResponse()
         slot_msg, slots = get_booking_start_message()
@@ -932,7 +966,7 @@ def webhook():
         log_to_db(sender, "assistant", "booking_menu", triage_level="BOOKING")
         return str(r)
 
-    # ── Layer 2c: Booking — sélection du créneau ────────────
+    # ── Layer 2d: Booking — sélection du créneau ────────────
     if is_booking_slot_selection(sender, incoming_text):
         choice = incoming_text.strip()
         stored_slots = None
