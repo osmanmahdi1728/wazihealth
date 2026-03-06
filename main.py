@@ -1,4 +1,6 @@
-import os, hashlib, tempfile, threading, requests
+import os, hashlib, tempfile, threading, requests, re
+import schedule, time as time_module
+from datetime import date, timedelta
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
@@ -173,8 +175,9 @@ DIAGNOSTIC FINAL — FORMAT PAR NIVEAU
    • Profil: [âge/situation]
 
 📅 Prenez rendez-vous:
-   • {BOOKING_LINK}
-   • 📍 https://maps.google.com/?q=hopital
+   Répondez *RENDEZ-VOUS* pour réserver
+   votre créneau directement ici
+   OU: {BOOKING_LINK}
 
 📚 En savoir plus:
    • 🌐 [lien WHO]
@@ -348,6 +351,25 @@ RESOURCES = {
 
 FEEDBACK_CHOICES = {"1": "utile", "2": "partiel", "3": "non_utile"}
 
+# ── Booking slots ──────────────────────────────────────────
+BOOKING_SLOTS = {
+    "1": {"label": "Demain matin",        "moment": "demain à 9h00"},
+    "2": {"label": "Demain après-midi",   "moment": "demain à 14h00"},
+    "3": {"label": "Dans 2 jours matin",  "moment": "dans 2 jours à 9h00"},
+}
+BOOKING_TIMES = {
+    "1": "9h00",
+    "2": "10h00",
+    "3": "11h00",
+}
+BOOKING_START_MSG = (
+    "📅 *Prendre rendez-vous*\n\n"
+    "Choisissez un jour:\n"
+    "1️⃣ Demain matin (9h-12h)\n"
+    "2️⃣ Demain après-midi (14h-17h)\n"
+    "3️⃣ Dans 2 jours matin (9h-12h)"
+)
+
 # ── Welcome audio ──────────────────────────────────────────
 WELCOME_AUDIO_URL = None
 
@@ -498,6 +520,160 @@ def is_feedback(sender, message):
         return False
     last = conversations[sender][-1]["content"].lower()
     return "cette réponse vous a-t-elle aidé" in last
+
+def is_booking_trigger(sender, message):
+    """Déclenche le flow booking sur mot-clé."""
+    triggers = [
+        "rendez-vous", "rdv", "rendez vous",
+        "consulter", "consultation", "prendre rdv",
+        "reserver", "réserver", "je veux un rdv"
+    ]
+    return message.lower().strip() in triggers
+
+def is_booking_day_selection(sender, message):
+    """Détecte sélection de jour dans le flow booking."""
+    if message.strip() not in ["1", "2", "3"]:
+        return False
+    if sender not in conversations or not conversations[sender]:
+        return False
+    last = conversations[sender][-1]["content"].lower()
+    return "choisissez un jour" in last
+
+def is_booking_time_selection(sender, message):
+    """Détecte sélection d'heure dans le flow booking."""
+    if message.strip() not in ["1", "2", "3"]:
+        return False
+    if sender not in conversations or not conversations[sender]:
+        return False
+    last = conversations[sender][-1]["content"].lower()
+    return "choisissez l'heure" in last or "choisissez une heure" in last
+
+def get_booking_day(sender):
+    """Récupère le jour choisi depuis la mémoire."""
+    for msg in reversed(conversations.get(sender, [])):
+        if msg.get("content", "").startswith("BOOKING_DAY:"):
+            return msg["content"].replace("BOOKING_DAY:", "")
+    return "demain"
+
+def confirm_booking(sender, day, time):
+    """Finalise le RDV — log + notifie médecin."""
+    booking_summary = f"{day} à {time}"
+    log_to_db(sender, "booking", booking_summary, triage_level="BOOKING")
+    notify_agent(sender,
+        f"📅 Nouveau RDV: {booking_summary}\n"
+        f"Patient: {hash_sender(sender)}"
+    )
+    return (
+        f"✅ *RDV confirmé!*\n\n"
+        f"📅 {day} à {time}\n"
+        f"📞 Le médecin vous appellera sur WhatsApp\n"
+        f"⏰ Rappel 30 min avant votre RDV\n\n"
+        f"Préparez:\n"
+        f"• Ce résumé de symptômes\n"
+        f"• Vos médicaments actuels\n\n"
+        f"Prenez soin de vous 💚"
+    )
+
+def get_booking_message():
+    """Génère le menu de créneaux depuis Supabase."""
+    slots = get_available_slots()
+    if not slots:
+        return (
+            "📅 Aucun créneau disponible pour le moment.\n\n"
+            "Le médecin vous contactera dans les 24h.\n"
+            "Nous vous notifierons dès qu'un créneau est libre."
+        ), []
+    msg = "📅 *Prendre rendez-vous*\n\nChoisissez un créneau:\n"
+    for i, slot in enumerate(slots[:5], 1):
+        msg += f"{i}️⃣ {slot['date']} à {slot['time']}\n"
+    return msg, slots
+
+def book_slot(sender, slot_id, slot_date, slot_time, symptoms):
+    """Réserve un créneau et log le RDV."""
+    supabase.table("slots")\
+        .update({"is_booked": True})\
+        .eq("id", slot_id)\
+        .execute()
+    supabase.table("appointments").insert({
+        "session_hash":  hash_sender(sender),
+        "slot_id":       slot_id,
+        "date":          slot_date,
+        "time":          slot_time,
+        "triage_level":  "YELLOW",
+        "symptoms":      symptoms,
+        "status":        "confirmed"
+    }).execute()
+    notify_agent(sender,
+        f"📅 Nouveau RDV: {slot_date} à {slot_time}\n"
+        f"Symptômes: {symptoms[:100]}"
+    )
+
+def send_queue_to_doctor():
+    """Envoie la file d'attente du jour au médecin."""
+    appointments = supabase.table("appointments")\
+        .select("*")\
+        .eq("date", str(date.today()))\
+        .eq("status", "confirmed")\
+        .order("time")\
+        .execute()\
+        .data
+
+    if not appointments:
+        return
+
+    msg = f"📋 *FILE D'ATTENTE — {INSTITUTION_NAME}*\n"
+    msg += f"{'━'*25}\n\n"
+
+    for apt in appointments:
+        emoji = "🔴" if apt["triage_level"] == "RED" else "🟡"
+        msg += (
+            f"{emoji} {apt['time']} — Patient #{apt['session_hash'][:4].upper()}\n"
+            f"   Symptômes: {apt['symptoms'][:80]}\n\n"
+        )
+
+    if AGENT_NUMBER:
+        try:
+            twilio_client.messages.create(
+                from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+                to=AGENT_NUMBER,
+                body=msg
+            )
+            print("✅ File d'attente envoyée au médecin")
+        except Exception as e:
+            print(f"❌ Queue send error: {e}")
+
+def parse_doctor_availability(message, doctor_id):
+    """Parse 'DISPO demain 9h 10h 14h' et crée les slots."""
+    msg = message.lower()
+    if "demain" in msg:
+        target_date = date.today() + timedelta(days=1)
+    elif "aujourd'hui" in msg:
+        target_date = date.today()
+    else:
+        return None
+    times = re.findall(r'\d+h\d*', msg)
+    if not times:
+        return None
+    for t in times:
+        supabase.table("slots").insert({
+            "doctor_id": doctor_id,
+            "date":      str(target_date),
+            "time":      t,
+            "is_booked": False
+        }).execute()
+    return f"✅ {len(times)} créneaux ajoutés pour {target_date}"
+
+def get_available_slots():
+    """Récupère les créneaux disponibles."""
+    result = supabase.table("slots")\
+        .select("*")\
+        .eq("is_booked", False)\
+        .gte("date", str(date.today()))\
+        .order("date")\
+        .order("time")\
+        .limit(6)\
+        .execute()
+    return result.data
 
 def is_location_request(sender, message):
     """Détecte si l'utilisateur cherche pharmacie ou hôpital."""
@@ -727,6 +903,23 @@ def webhook():
         send_welcome_audio(sender)
         return str(r)
 
+    # ── Doctor DISPO management ─────────────────────────────
+    if incoming_text.upper().startswith("DISPO"):
+        doctor_id = hash_sender(sender)
+        result = parse_doctor_availability(incoming_text, doctor_id)
+        r = MessagingResponse()
+        if result:
+            r.message(result)
+        else:
+            r.message("Format: DISPO demain 9h 10h 14h 15h")
+        return str(r)
+
+    if incoming_text.upper().strip() in ["FILE", "QUEUE", "PATIENTS"]:
+        send_queue_to_doctor()
+        r = MessagingResponse()
+        r.message("📋 File d'attente envoyée!")
+        return str(r)
+
     # ── Layer 1: Urgence critique ───────────────────────────
     if is_critical(incoming_text):
         print("🚨 CRITIQUE")
@@ -744,6 +937,85 @@ def webhook():
         conversations.pop(sender, None)
         r = MessagingResponse()
         r.message(HANDOFF_RESPONSE)
+        return str(r)
+
+    # ── Layer 2b: Booking trigger ───────────────────────────
+    if is_booking_trigger(sender, incoming_text):
+        r = MessagingResponse()
+        try:
+            slot_msg, slots = get_booking_message()
+        except Exception:
+            slot_msg, slots = BOOKING_START_MSG, []
+        if slots:
+            conversations[sender].append({"role": "system", "content": "BOOKING_SLOTS:" + ",".join(s["id"] for s in slots)})
+        conversations[sender].append({"role": "assistant", "content": slot_msg})
+        r.message(slot_msg)
+        log_to_db(sender, "assistant", "booking_menu", triage_level="BOOKING")
+        return str(r)
+
+    # ── Layer 2c: Booking — sélection du créneau ────────────
+    if is_booking_day_selection(sender, incoming_text):
+        choice = incoming_text.strip()
+        stored_slots = None
+        for msg in reversed(conversations.get(sender, [])):
+            if msg.get("content", "").startswith("BOOKING_SLOTS:"):
+                stored_slots = msg["content"].replace("BOOKING_SLOTS:", "").split(",")
+                break
+        if stored_slots:
+            idx = int(choice) - 1
+            if 0 <= idx < len(stored_slots):
+                slot_id = stored_slots[idx]
+                try:
+                    slot_data = supabase.table("slots").select("*").eq("id", slot_id).single().execute()
+                    s = slot_data.data
+                    symptoms = ""
+                    for msg in reversed(conversations.get(sender, [])):
+                        if msg.get("role") == "user" and msg.get("content", "") not in ["1","2","3","4","5"]:
+                            symptoms = msg["content"]
+                            break
+                    book_slot(sender, slot_id, s["date"], s["time"], symptoms)
+                    confirmation = confirm_booking(sender, s["date"], s["time"])
+                    r = MessagingResponse()
+                    r.message(confirmation)
+                    conversations[sender].append({"role": "assistant", "content": confirmation})
+                    conversations.pop(sender, None)
+                    return str(r)
+                except Exception as e:
+                    print(f"❌ Booking DB error: {e}")
+            r = MessagingResponse()
+            r.message("Ce créneau n'est plus disponible. Répondez *RENDEZ-VOUS* pour voir les créneaux actuels.")
+            return str(r)
+        slot = BOOKING_SLOTS.get(choice)
+        if not slot:
+            r = MessagingResponse()
+            r.message("Répondez 1, 2 ou 3 svp.")
+            return str(r)
+        conversations[sender].append({"role": "system", "content": f"BOOKING_DAY:{slot['label']}"})
+        time_msg = (
+            f"✅ {slot['label']} — choisissez l'heure:\n\n"
+            "1️⃣ 9h00\n"
+            "2️⃣ 10h00\n"
+            "3️⃣ 11h00"
+        )
+        r = MessagingResponse()
+        r.message(time_msg)
+        conversations[sender].append({"role": "assistant", "content": time_msg})
+        return str(r)
+
+    # ── Layer 2d: Booking — sélection de l'heure (fallback) ─
+    if is_booking_time_selection(sender, incoming_text):
+        choice   = incoming_text.strip()
+        time     = BOOKING_TIMES.get(choice)
+        day      = get_booking_day(sender)
+        if not time:
+            r = MessagingResponse()
+            r.message("Répondez 1, 2 ou 3 svp.")
+            return str(r)
+        confirmation = confirm_booking(sender, day, time)
+        r = MessagingResponse()
+        r.message(confirmation)
+        conversations[sender].append({"role": "assistant", "content": confirmation})
+        conversations.pop(sender, None)
         return str(r)
 
     # ── Layer 3: Location ───────────────────────────────────
@@ -817,8 +1089,15 @@ def webhook():
 
     return str(r)
 
+def run_schedule():
+    schedule.every().day.at("08:00").do(send_queue_to_doctor)
+    while True:
+        schedule.run_pending()
+        time_module.sleep(60)
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     threading.Thread(target=get_or_create_welcome_audio, daemon=True).start()
+    threading.Thread(target=run_schedule, daemon=True).start()
     app.run(host="0.0.0.0", port=port)
 
