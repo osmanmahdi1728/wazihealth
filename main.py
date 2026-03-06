@@ -81,11 +81,33 @@ Si PEAU:
 ━━━━━━━━━━━━━━━━━━━━━━
 ÉCHANGE 3 — Profil rapide
 ━━━━━━━━━━━━━━━━━━━━━━
-"Dernière question:
-• C'est pour qui? Bébé / Enfant / Adulte / Personne âgée
-• Femme enceinte? Oui / Non
-• Voyage récent en zone rurale? Oui / Non
-• Autres malades autour de vous? Oui / Non"
+Pose ces 3 questions séparément et clairement:
+
+QUESTION A — Qui est concerné?
+"C'est pour qui?
+1️⃣ Bébé (moins de 2 ans)
+2️⃣ Enfant (2 à 12 ans)
+3️⃣ Adolescent (13 à 17 ans)
+4️⃣ Adulte (18 à 60 ans)
+5️⃣ Personne âgée (60 ans et plus)"
+
+QUESTION B — Situation spéciale?
+"Y a-t-il une situation particulière?
+1️⃣ Femme enceinte
+2️⃣ Femme qui allaite
+3️⃣ Personne diabétique ou hypertendue
+4️⃣ Aucune de ces situations"
+
+QUESTION C — Contexte récent?
+"Dans les 2 dernières semaines:
+1️⃣ Voyage en zone rurale ou forestière
+2️⃣ Contact avec quelqu'un de malade
+3️⃣ Les deux
+4️⃣ Aucun des deux"
+
+→ Accepte les réponses en chiffres ou en texte libre
+→ Si l'utilisateur répond tout en une fois → accepte aussi
+→ Après les 3 questions → passe au diagnostic
 
 ━━━━━━━━━━━━━━━━━━━━━━
 ÉCHANGE 4 — DIAGNOSTIC FINAL
@@ -620,7 +642,16 @@ def webhook():
     if incoming_text.lower() in ["reset", "recommencer", "nouvelle consultation"]:
         conversations.pop(sender, None)
         r = MessagingResponse()
-        r.message("🔄 Nouvelle consultation.\n\nBonjour! Dites-moi ce qui ne va pas 🏥")
+        r.message(
+            "👋 Bonjour! Je suis WaziHealth 🏥\n\n"
+            "Je peux vous aider à:\n"
+            "• 🤒 Comprendre vos symptômes\n"
+            "• 💊 Savoir quoi faire en attendant le médecin\n"
+            "• 🏥 Trouver une pharmacie ou un hôpital proche\n\n"
+            "Dites-moi ce qui ne va pas\n"
+            "— texte, photo 📸 ou vocal 🎤"
+        )
+        send_welcome_audio(sender)
         return str(r)
 
     # ── Layer 1: Urgence critique ───────────────────────────
