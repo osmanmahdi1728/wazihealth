@@ -1,39 +1,21 @@
-import os
-import hashlib
-import tempfile
-import requests
+import os, hashlib, tempfile, threading, requests
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 from openai import OpenAI
 from supabase import create_client
-import cloudinary
-import cloudinary.uploader
+import cloudinary, cloudinary.uploader
 
-# ── App setup ──────────────────────────────────────────────
 app = Flask(__name__)
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-supabase = create_client(
-    os.environ.get("SUPABASE_URL"),
-    os.environ.get("SUPABASE_KEY")
-)
-twilio_client = TwilioClient(
-    os.environ.get("TWILIO_ACCOUNT_SID"),
-    os.environ.get("TWILIO_AUTH_TOKEN")
-)
-cloudinary.config(
-    cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.environ.get("CLOUDINARY_API_KEY"),
-    api_secret=os.environ.get("CLOUDINARY_API_SECRET")
-)
+supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
+twilio_client = TwilioClient(os.environ.get("TWILIO_ACCOUNT_SID"), os.environ.get("TWILIO_AUTH_TOKEN"))
+cloudinary.config(cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"), api_key=os.environ.get("CLOUDINARY_API_KEY"), api_secret=os.environ.get("CLOUDINARY_API_SECRET"))
 
-# ── Conversation memory ────────────────────────────────────
 conversations = {}
 MAX_HISTORY = 10
 
-# ── System prompt ──────────────────────────────────────────
-SYSTEM_PROMPT = """Tu es WaziHealth, un assistant de triage médical 
-bienveillant pour l'Afrique de l'Ouest francophone.
+SYSTEM_PROMPT = """Tu es WaziHealth, un assistant de triage médical bienveillant pour l'Afrique de l'Ouest francophone.
 
 Tu évalues le niveau d'urgence et structures TOUJOURS ta réponse finale ainsi:
 
@@ -42,13 +24,13 @@ Tu évalues le niveau d'urgence et structures TOUJOURS ta réponse finale ainsi:
 📋 Analyse: [symptômes identifiés + hypothèse probable]
 
 💊 En attendant le médecin:
-   • [conseil pratique 1 — automédication sûre]
-   • [conseil pratique 2 — hydratation, repos, etc.]
+   • [conseil pratique 1]
+   • [conseil pratique 2]
    • [ce qu'il faut éviter]
 
 🏥 À la pharmacie, demandez:
-   • "[terme exact à utiliser]"
-   • Prix approximatif si connu (en CFA)
+   • "[terme exact]"
+   • Prix approximatif en CFA
 
 👉 Action: [ce que l'utilisateur doit faire maintenant]
 
@@ -56,323 +38,186 @@ Tu évalues le niveau d'urgence et structures TOUJOURS ta réponse finale ainsi:
    • [option 1]
    • [option 2]
 
-💬 Voulez-vous parler à un agent humain?
-   Répondez *OUI* pour être mis en contact.
+💬 Voulez-vous parler à un agent humain? Répondez *OUI*.
 
 ⚠️ Ceci n'est pas un avis médical professionnel.
 
----
+Niveaux: 🟢 VERT=domicile 🟡 JAUNE=pharmacie/24h 🔴 ROUGE=urgence immédiate
+Règles: max 2 questions avant réponse finale. Section 💊 uniquement VERT/JAUNE.
+Jamais antibiotiques sans ordonnance. Prix en CFA. Maladies: paludisme, typhoïde, méningite, dengue.
+Si urgence évidente → ROUGE immédiatement. Toujours en français."""
 
-Niveaux d'urgence:
-🟢 VERT — Soins à domicile
-→ Symptômes légers, pas de danger immédiat
-
-🟡 JAUNE — Pharmacie ou médecin dans les 24h
-→ Symptômes modérés qui nécessitent attention
-
-🔴 ROUGE — URGENCE, soins immédiats requis
-→ Symptômes graves ou potentiellement mortels
-
-Règles:
-- Pendant les questions de suivi → pas de format, juste la question
-- Format structuré UNIQUEMENT pour la réponse finale
-- Maximum 2 questions avant de donner la réponse finale
-- Section 💊 uniquement pour VERT et JAUNE — jamais pour ROUGE
-- Automédication: uniquement sans ordonnance
-  (paracétamol, SRO, antihistaminiques)
-- Jamais recommander antibiotiques sans ordonnance
-- Prix en CFA quand possible
-- Maladies fréquentes: paludisme, typhoïde, méningite, dengue, choléra
-- Si urgence évidente → ROUGE immédiatement sans questions
-- Toujours répondre en français"""
-
-# ── Emergency constants ────────────────────────────────────
-CRITICAL_KEYWORDS = [
-    "ne respire pas", "arrêt cardiaque", "inconscient",
-    "ne répond plus", "overdose", "empoisonnement"
-]
+CRITICAL_KEYWORDS = ["ne respire pas","arrêt cardiaque","inconscient","ne répond plus","overdose","empoisonnement"]
 
 EMERGENCY_RESPONSE = """🔴 URGENCE MÉDICALE CRITIQUE
 
-Ce que vous décrivez nécessite une aide médicale IMMÉDIATE.
-
-👉 Appelez le 15 (SAMU) ou rendez-vous aux urgences MAINTENANT.
-
+Appelez le 15 (SAMU) ou urgences MAINTENANT.
 Ne restez pas seul(e).
 
 ⚠️ Ceci n'est pas un avis médical professionnel."""
 
 HANDOFF_RESPONSE = """👤 *Transfert vers un agent humain*
 
-Un agent WaziHealth va vous contacter dans les plus brefs délais.
-
-📞 Vous pouvez aussi nous appeler:
-*+221 XX XXX XX XX*
-
+Un agent WaziHealth vous contacte bientôt.
+📞 *+221 XX XXX XX XX*
 Merci de votre confiance. 🙏"""
 
-# ── Helper: anonymize phone number ────────────────────────
-def hash_sender(sender):
-    return hashlib.sha256(sender.encode()).hexdigest()[:16]
+def hash_sender(s): return hashlib.sha256(s.encode()).hexdigest()[:16]
 
-# ── Helper: detect triage level ───────────────────────────
-def extract_triage_level(ai_response):
-    response_upper = ai_response.upper()
-    if "ROUGE" in response_upper or "🔴" in ai_response:
-        return "RED"
-    elif "JAUNE" in response_upper or "🟡" in ai_response:
-        return "YELLOW"
-    elif "VERT" in response_upper or "🟢" in ai_response:
-        return "GREEN"
+def extract_triage_level(r):
+    u = r.upper()
+    if "ROUGE" in u or "🔴" in r: return "RED"
+    if "JAUNE" in u or "🟡" in r: return "YELLOW"
+    if "VERT" in u or "🟢" in r: return "GREEN"
     return "PENDING"
 
-# ── Helper: detect condition for media matching ────────────
-def detect_condition(ai_response):
-    response_lower = ai_response.lower()
-    conditions = {
-        "paludisme": ["paludisme", "malaria", "tdr"],
-        "typhoide":  ["typhoïde", "typhoide", "fièvre typhoïde"],
-        "diarrhee":  ["diarrhée", "diarrhee", "gastro", "sro"],
-        "meningite": ["méningite", "meningite"],
-        "dengue":    ["dengue"],
-    }
-    for condition, keywords in conditions.items():
-        if any(kw in response_lower for kw in keywords):
-            return condition
-    return None
-
-# ── Helper: log to Supabase ───────────────────────────────
-def log_to_db(sender, role, content,
-              triage_level=None, is_emergency=False):
+def log_to_db(sender, role, content, triage_level=None, is_emergency=False):
     try:
         supabase.table("consultations").insert({
-            "session_id":      hash_sender(sender),
-            "sender_hash":     hash_sender(sender),
-            "message_role":    role,
-            "message_content": content,
-            "triage_level":    triage_level,
-            "is_emergency":    is_emergency,
+            "session_id": hash_sender(sender), "sender_hash": hash_sender(sender),
+            "message_role": role, "message_content": content,
+            "triage_level": triage_level, "is_emergency": is_emergency,
         }).execute()
     except Exception as e:
-        print(f"⚠️ DB log error: {e}")
+        print(f"⚠️ DB error: {e}")
 
-# ── Helper: human handoff check ───────────────────────────
 def is_handoff_request(sender, message):
-    if message.strip().upper() not in ["OUI", "OUI.", "OUI!"]:
-        return False
-    if sender not in conversations or len(conversations[sender]) == 0:
-        return False
-    last_bot_message = conversations[sender][-1]["content"]
-    return "agent humain" in last_bot_message.lower()
+    if message.strip().upper() not in ["OUI","OUI.","OUI!"]: return False
+    if sender not in conversations or not conversations[sender]: return False
+    return "agent humain" in conversations[sender][-1]["content"].lower()
 
-# ── Helper: critical emergency check ──────────────────────
 def is_critical(message):
-    message_lower = message.lower()
-    return any(keyword in message_lower for keyword in CRITICAL_KEYWORDS)
+    return any(k in message.lower() for k in CRITICAL_KEYWORDS)
 
-# ── Helper: transcribe voice note ─────────────────────────
 def transcribe_audio(media_url):
     try:
-        auth = (
-            os.environ.get("TWILIO_ACCOUNT_SID"),
-            os.environ.get("TWILIO_AUTH_TOKEN")
-        )
-        audio_response = requests.get(media_url, auth=auth, timeout=30)
-
-        if audio_response.status_code != 200:
-            print(f"⚠️ Audio download failed: {audio_response.status_code}")
-            return None
-
-        with tempfile.NamedTemporaryFile(
-            suffix=".ogg", delete=False
-        ) as tmp:
-            tmp.write(audio_response.content)
+        print(f"⬇️ Téléchargement audio...")
+        auth = (os.environ.get("TWILIO_ACCOUNT_SID"), os.environ.get("TWILIO_AUTH_TOKEN"))
+        r = requests.get(media_url, auth=auth, timeout=30)
+        print(f"📥 Status: {r.status_code}")
+        if r.status_code != 200: return None
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp.write(r.content)
             tmp_path = tmp.name
-
-        with open(tmp_path, "rb") as audio_file:
-            transcription = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language="fr"
-            )
-
-        transcript = transcription.text
-        print(f"🎤 Transcription: {transcript}")
-        return transcript
-
+        with open(tmp_path, "rb") as f:
+            result = openai_client.audio.transcriptions.create(model="whisper-1", file=f, language="fr")
+        print(f"🎤 Transcription: {result.text}")
+        return result.text
     except Exception as e:
         print(f"❌ Transcription error: {e}")
         return None
 
-# ── Helper: generate audio response ───────────────────────
-def generate_audio_response(text):
+def send_audio_async(sender, ai_response):
     try:
-        # Generate speech with OpenAI TTS
-        tts_response = openai_client.audio.speech.create(
-            model="tts-1",
-            voice="nova",
-            input=text,
-            speed=0.9
-        )
-
-        # Save to temp file
-        with tempfile.NamedTemporaryFile(
-            suffix=".mp3", delete=False
-        ) as tmp:
-            tmp.write(tts_response.content)
+        print("🔄 Génération audio en arrière-plan...")
+        summary = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Résume en 2-3 phrases courtes pour message vocal. Garde urgence + action principale."},
+                {"role": "user", "content": ai_response}
+            ],
+            max_tokens=120
+        ).choices[0].message.content
+        print(f"📝 Résumé: {summary}")
+        tts = openai_client.audio.speech.create(model="tts-1", voice="nova", input=summary, speed=0.9)
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp.write(tts.content)
             tmp_path = tmp.name
-
-        # Upload to Cloudinary
-        upload_result = cloudinary.uploader.upload(
-            tmp_path,
-            resource_type="video",
-            folder="wazihealth/audio"
+        upload = cloudinary.uploader.upload(tmp_path, resource_type="video", folder="wazihealth/audio")
+        audio_url = upload["secure_url"]
+        print(f"☁️ Uploadé: {audio_url}")
+        twilio_client.messages.create(
+            from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+            to=sender,
+            media_url=[audio_url],
+            body="🎤"
         )
-
-        audio_url = upload_result["secure_url"]
-        print(f"🔊 Audio uploaded: {audio_url}")
-        return audio_url
-
+        print(f"✅ Audio envoyé à {hash_sender(sender)}")
     except Exception as e:
-        print(f"❌ TTS error: {e}")
-        return None
+        print(f"❌ Audio async error: {type(e).__name__}: {e}")
 
-# ── AI response with memory ────────────────────────────────
 def get_ai_response(sender, user_message):
     try:
-        if sender not in conversations:
-            conversations[sender] = []
-
-        conversations[sender].append({
-            "role": "user",
-            "content": user_message
-        })
-
+        if sender not in conversations: conversations[sender] = []
+        conversations[sender].append({"role": "user", "content": user_message})
         if len(conversations[sender]) > MAX_HISTORY:
             conversations[sender] = conversations[sender][-MAX_HISTORY:]
-
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        messages += conversations[sender]
-
-        completion = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            max_tokens=500,
-            temperature=0.2
-        )
-
-        ai_reply = completion.choices[0].message.content
-
-        conversations[sender].append({
-            "role": "assistant",
-            "content": ai_reply
-        })
-
-        return ai_reply
-
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversations[sender]
+        reply = openai_client.chat.completions.create(model="gpt-4o-mini", messages=messages, max_tokens=500, temperature=0.2).choices[0].message.content
+        conversations[sender].append({"role": "assistant", "content": reply})
+        return reply
     except Exception as e:
-        print(f"❌ OpenAI error: {type(e).__name__}: {e}")
-        return (
-            "Désolé, je rencontre un problème technique. "
-            "Veuillez réessayer dans quelques instants. 🙏"
-        )
+        print(f"❌ OpenAI error: {e}")
+        return "Désolé, problème technique. Veuillez réessayer. 🙏"
 
-# ── Routes ─────────────────────────────────────────────────
 @app.route("/", methods=["GET"])
 def home():
     return "WaziHealth est en ligne! 🏥", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    sender         = request.form.get("From", "")
-    incoming_text  = request.form.get("Body", "").strip()
-    num_media      = int(request.form.get("NumMedia", 0))
-    is_audio_input = False
+    sender        = request.form.get("From", "")
+    incoming_text = request.form.get("Body", "").strip()
+    num_media     = int(request.form.get("NumMedia", 0))
+    is_audio      = False
 
-    # ── Handle voice note ───────────────────────────────────
     if num_media > 0:
-        media_url          = request.form.get("MediaUrl0", "")
-        media_content_type = request.form.get("MediaContentType0", "")
-
-        print(f"🎤 Media reçu: {media_content_type}")
-
-        if "audio" in media_content_type:
-            is_audio_input = True
+        media_url   = request.form.get("MediaUrl0", "")
+        media_type  = request.form.get("MediaContentType0", "")
+        print(f"📎 Media: {media_type}")
+        if "audio" in media_type:
+            is_audio = True
             transcript = transcribe_audio(media_url)
-
             if transcript:
                 incoming_text = transcript
-                print(f"✅ Transcription: {incoming_text}")
             else:
-                response = MessagingResponse()
-                response.message(
-                    "🎤 Je n'ai pas pu comprendre votre message vocal.\n\n"
-                    "Pouvez-vous décrire vos symptômes par écrit? 🙏"
-                )
-                return str(response)
+                r = MessagingResponse()
+                r.message("🎤 Message vocal incompris. Décrivez par écrit svp 🙏")
+                return str(r)
         else:
-            response = MessagingResponse()
-            response.message(
-                "Je peux recevoir des messages vocaux et texte.\n"
-                "Décrivez vos symptômes en texte ou message vocal 🎤"
-            )
-            return str(response)
+            r = MessagingResponse()
+            r.message("Envoyez un texte ou message vocal 🎤")
+            return str(r)
 
-    # ── Empty message → welcome ─────────────────────────────
     if not incoming_text:
-        response = MessagingResponse()
-        response.message(
-            "👋 Bonjour! Je suis WaziHealth.\n\n"
-            "Décrivez vos symptômes en texte ou envoyez "
-            "un message vocal 🎤 et je vous aiderai."
-        )
-        return str(response)
+        r = MessagingResponse()
+        r.message("👋 Bonjour! Je suis WaziHealth.\nDécrivez vos symptômes en texte ou vocal 🎤")
+        return str(r)
 
-    print(f"📩 Message de {hash_sender(sender)}: {incoming_text}")
+    print(f"📩 {hash_sender(sender)}: {incoming_text}")
     log_to_db(sender, "user", incoming_text)
 
-    # ── Layer 1: Critical emergency ─────────────────────────
     if is_critical(incoming_text):
-        print(f"🚨 CRITIQUE détecté")
-        log_to_db(sender, "assistant", EMERGENCY_RESPONSE,
-                  triage_level="RED", is_emergency=True)
+        print("🚨 CRITIQUE détecté")
+        log_to_db(sender, "assistant", EMERGENCY_RESPONSE, triage_level="RED", is_emergency=True)
         conversations.pop(sender, None)
-        response = MessagingResponse()
-        response.message(EMERGENCY_RESPONSE)
-        return str(response)
+        r = MessagingResponse()
+        r.message(EMERGENCY_RESPONSE)
+        return str(r)
 
-    # ── Layer 2: Human handoff ──────────────────────────────
     if is_handoff_request(sender, incoming_text):
-        print(f"👤 Handoff demandé")
-        log_to_db(sender, "system", "HUMAN_HANDOFF_REQUESTED",
-                  triage_level="HANDOFF")
+        print("👤 Handoff demandé")
+        log_to_db(sender, "system", "HUMAN_HANDOFF_REQUESTED", triage_level="HANDOFF")
         conversations.pop(sender, None)
-        response = MessagingResponse()
-        response.message(HANDOFF_RESPONSE)
-        return str(response)
+        r = MessagingResponse()
+        r.message(HANDOFF_RESPONSE)
+        return str(r)
 
-    # ── Layer 3: AI triage ──────────────────────────────────
     ai_response  = get_ai_response(sender, incoming_text)
     triage_level = extract_triage_level(ai_response)
-    condition    = detect_condition(ai_response)
+    log_to_db(sender, "assistant", ai_response, triage_level=triage_level)
+    print(f"🤖 Triage: {triage_level}")
 
-    log_to_db(sender, "assistant", ai_response,
-              triage_level=triage_level)
-    print(f"🤖 Triage: {triage_level} | Condition: {condition}")
+    r = MessagingResponse()
+    r.message(ai_response)
 
-    response = MessagingResponse()
+    if is_audio:
+        t = threading.Thread(target=send_audio_async, args=(sender, ai_response))
+        t.daemon = True
+        t.start()
+        print("🔄 Thread audio démarré")
 
-    # Send audio response if user sent audio
-    if is_audio_input:
-        audio_url = generate_audio_response(ai_response)
-        if audio_url:
-            response.message("🎤 Réponse vocale:").media(audio_url)
+    return str(r)
 
-    # Always send text response
-    response.message(ai_response)
-
-    return str(response)
-
-# ── Run ────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
