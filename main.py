@@ -267,6 +267,59 @@ RESOURCES = {
 
 FEEDBACK_CHOICES = {"1": "utile", "2": "partiel", "3": "non_utile"}
 
+# ── Welcome audio ──────────────────────────────────────────
+WELCOME_AUDIO_URL = None
+
+def get_or_create_welcome_audio():
+    global WELCOME_AUDIO_URL
+    if WELCOME_AUDIO_URL:
+        return WELCOME_AUDIO_URL
+    try:
+        print("🎤 Génération audio de bienvenue...")
+        welcome_text = (
+            "Bonjour! Je suis WaziHealth, votre assistant santé. "
+            "Je suis là pour vous aider à comprendre vos symptômes "
+            "et vous orienter vers les meilleurs soins. "
+            "Vous pouvez m'envoyer un message vocal, une photo, "
+            "ou écrire en texte. Je vous accompagne pas à pas. "
+            "Dites-moi ce qui ne va pas."
+        )
+        tts = openai_client.audio.speech.create(
+            model="tts-1", voice="nova", input=welcome_text, speed=0.85
+        )
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp.write(tts.content)
+            tmp_path = tmp.name
+        upload = cloudinary.uploader.upload(
+            tmp_path,
+            resource_type="video",
+            folder="wazihealth/audio",
+            public_id="welcome_message"
+        )
+        WELCOME_AUDIO_URL = upload["secure_url"]
+        print(f"✅ Audio bienvenue prêt: {WELCOME_AUDIO_URL}")
+        return WELCOME_AUDIO_URL
+    except Exception as e:
+        print(f"❌ Welcome audio error: {e}")
+        return None
+
+def send_welcome_audio(sender):
+    def _send():
+        audio_url = get_or_create_welcome_audio()
+        if not audio_url: return
+        try:
+            twilio_client.messages.create(
+                from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+                to=sender,
+                media_url=[audio_url],
+                body="🎤"
+            )
+            print(f"✅ Audio bienvenue envoyé")
+        except Exception as e:
+            print(f"❌ Welcome send error: {e}")
+    t = threading.Thread(target=_send, daemon=True)
+    t.start()
+
 # ── Helpers ────────────────────────────────────────────────
 def hash_sender(s):
     return hashlib.sha256(s.encode()).hexdigest()[:16]
@@ -552,6 +605,7 @@ def webhook():
             "Dites-moi ce qui ne va pas\n"
             "— texte, photo 📸 ou vocal 🎤"
         )
+        send_welcome_audio(sender)
         return str(r)
 
     print(f"📩 {hash_sender(sender)}: {incoming_text}")
@@ -654,5 +708,6 @@ def webhook():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
+    threading.Thread(target=get_or_create_welcome_audio, daemon=True).start()
     app.run(host="0.0.0.0", port=port)
 
