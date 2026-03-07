@@ -855,7 +855,7 @@ def webhook():
     GREETINGS = ["bonjour", "bonsoir", "salut", "hello", "hi", "allo", "allô", "salam"]
     if not incoming_text or incoming_text.lower().strip() in GREETINGS:
         profile_question = (
-            "👋 Bonjour! Je suis l'assistant de WaziHealth 🏥\n\n"
+            f"👋 Bonjour! Je suis l'assistant de {INSTITUTION_NAME} 🏥\n\n"
             "Je peux vous aider à:\n"
             "• 🤒 Comprendre vos symptômes\n"
             "• 💊 Savoir quoi faire en attendant le médecin\n"
@@ -867,14 +867,14 @@ def webhook():
             "3️⃣ Personne âgée (60 ans et plus)\n"
             "4️⃣ Autre profil (enceinte, maladie chronique...)"
         )
-        r = MessagingResponse()
-        r.message(profile_question)
         if sender not in conversations:
             conversations[sender] = []
         conversations[sender].append({
             "role": "assistant",
             "content": profile_question
         })
+        r = MessagingResponse()
+        r.message(profile_question)
         send_welcome_audio(sender)
         return str(r)
 
@@ -884,16 +884,25 @@ def webhook():
     # ── Reset session ───────────────────────────────────────
     if incoming_text.lower() in ["reset", "recommencer", "nouvelle consultation"]:
         conversations.pop(sender, None)
-        r = MessagingResponse()
-        r.message(
-            "👋 Bonjour! Je suis WaziHealth 🏥\n\n"
+        profile_question = (
+            f"👋 Bonjour! Je suis l'assistant de {INSTITUTION_NAME} 🏥\n\n"
             "Je peux vous aider à:\n"
             "• 🤒 Comprendre vos symptômes\n"
             "• 💊 Savoir quoi faire en attendant le médecin\n"
             "• 🏥 Trouver une pharmacie ou un hôpital proche\n\n"
-            "Dites-moi ce qui ne va pas\n"
-            "— texte, photo 📸 ou vocal 🎤"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Qui consulte aujourd'hui?\n\n"
+            "1️⃣ Adulte (18-60 ans) — bonne santé générale\n"
+            "2️⃣ Enfant (2-17 ans)\n"
+            "3️⃣ Personne âgée (60 ans et plus)\n"
+            "4️⃣ Autre profil (enceinte, maladie chronique...)"
         )
+        conversations[sender] = [{
+            "role": "assistant",
+            "content": profile_question
+        }]
+        r = MessagingResponse()
+        r.message(profile_question)
         send_welcome_audio(sender)
         return str(r)
 
