@@ -1569,21 +1569,25 @@ def webhook():
     if is_doc or is_agt:
         if incoming_text.upper().strip() == "PATIENT":
             conversations[sender] = []
-            profile_question = (
-                f"👋 Mode patient activé — {INSTITUTION_NAME} 🏥\n\n"
-                "Qui consulte aujourd'hui?\n\n"
-                "1️⃣ Adulte (18-60 ans)\n"
-                "2️⃣ Enfant (2-17 ans)\n"
-                "3️⃣ Personne âgée (60 ans et plus)\n"
-                "4️⃣ Autre profil (enceinte, maladie chronique...)"
+            welcome_msg = (
+                f"👋 *Bienvenue chez {INSTITUTION_NAME}* 🏥\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"1️⃣ 🤒 *Consulter* — symptômes + conseil\n"
+                f"2️⃣ 📍 *Trouver* — pharmacie ou hôpital\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
             )
             conversations[sender] = [
-                {"role": "assistant", "content": profile_question},
+                {"role": "assistant", "content": welcome_msg},
                 {"role": "system",    "content": "PATIENT_MODE:true"}
             ]
-            r = MessagingResponse()
-            r.message(profile_question)
-            return str(r)
+            sent = send_template(sender, TEMPLATE_ACCUEIL_SID)
+            if not sent:
+                r = MessagingResponse()
+                r.message(welcome_msg)
+                send_welcome_audio(sender)
+                return str(r)
+            send_welcome_audio(sender)
+            return ("", 204)
 
         intent = detect_intent(sender, incoming_text)
         action = intent.get("intent")
