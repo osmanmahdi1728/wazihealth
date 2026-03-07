@@ -639,16 +639,20 @@ def is_handoff_request(sender, message):
     return "répondez oui ou non" in last
 
 def is_profile_response(sender, message):
-    """Détecte si le message est une réponse au profil."""
+    """Détecte si le message est une réponse au profil 1/2/3/4."""
     if message.strip() not in ["1", "2", "3", "4"]:
         return False
     if sender not in conversations or not conversations[sender]:
         return False
-    last = conversations[sender][-1]["content"].lower()
+    last = next(
+        (m["content"].lower() for m in reversed(conversations[sender])
+         if m.get("role") == "assistant"),
+        ""
+    )
     return (
         "qui consulte" in last or
         "mode patient" in last or
-        "qui consulte aujourd" in last
+        ("bonjour" in last and "adulte" in last)
     )
 
 
@@ -1643,34 +1647,6 @@ def webhook():
             r.message("❓ Commande non reconnue.\nEnvoyez *AIDE* pour voir les commandes disponibles.")
             return str(r)
 
-    # ── Layer 2f: Profil → template symptômes ──────────────
-    if is_profile_response(sender, incoming_text):
-        conversations[sender].append({
-            "role": "user",
-            "content": incoming_text
-        })
-        sent = send_template(sender, TEMPLATE_SYMPTOMES_SID)
-        symptom_msg = (
-            "Qu'est-ce qui ne va pas et depuis quand?\n\n"
-            "1️⃣ Fièvre — depuis aujourd'hui\n"
-            "2️⃣ Fièvre — depuis 2 jours ou plus\n"
-            "3️⃣ Douleur (tête, ventre, dos)\n"
-            "4️⃣ Toux / difficultés à respirer\n"
-            "5️⃣ Problèmes digestifs\n"
-            "6️⃣ Problème de peau\n"
-            "7️⃣ Fatigue / faiblesse\n"
-            "8️⃣ Autre"
-        )
-        conversations[sender].append({
-            "role": "assistant",
-            "content": symptom_msg
-        })
-        if not sent:
-            r = MessagingResponse()
-            r.message(symptom_msg)
-            return str(r)
-        return ("", 204)
-
     # ── Layer 1: Urgence critique ───────────────────────────
     if is_critical(incoming_text):
         print("🚨 CRITIQUE")
@@ -1789,6 +1765,34 @@ def webhook():
         r = MessagingResponse()
         r.message("Ce créneau n'est plus disponible. Répondez *RENDEZ-VOUS* pour voir les créneaux actuels.")
         return str(r)
+
+    # ── Layer 2e: Profil → envoie template symptômes ───────
+    if is_profile_response(sender, incoming_text):
+        conversations[sender].append({
+            "role": "user",
+            "content": incoming_text
+        })
+        symptom_msg = (
+            "Qu'est-ce qui ne va pas et depuis quand?\n\n"
+            "1️⃣ Fièvre — depuis aujourd'hui\n"
+            "2️⃣ Fièvre — depuis 2 jours ou plus\n"
+            "3️⃣ Douleur (tête, ventre, dos)\n"
+            "4️⃣ Toux / difficultés à respirer\n"
+            "5️⃣ Problèmes digestifs\n"
+            "6️⃣ Problème de peau\n"
+            "7️⃣ Fatigue / faiblesse\n"
+            "8️⃣ Autre"
+        )
+        conversations[sender].append({
+            "role": "assistant",
+            "content": symptom_msg
+        })
+        sent = send_template(sender, TEMPLATE_SYMPTOMES_SID)
+        if not sent:
+            r = MessagingResponse()
+            r.message(symptom_msg)
+            return str(r)
+        return ("", 204)
 
     # ── Layer 3: Location ───────────────────────────────────
     if is_location_request(sender, incoming_text):
