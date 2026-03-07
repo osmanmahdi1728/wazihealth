@@ -26,6 +26,17 @@ MAX_HISTORY = 20
 INSTITUTION_NAME = os.environ.get("INSTITUTION_NAME", "WaziHealth")
 BOOKING_LINK     = os.environ.get("BOOKING_LINK", "https://maps.google.com/?q=hopital")
 AGENT_NUMBER     = os.environ.get("AGENT_NUMBER", "")
+DOCTOR_NUMBERS = [
+    n.strip() for n in
+    os.environ.get("DOCTOR_NUMBERS", "").split(",")
+    if n.strip()
+]
+
+def is_doctor(sender):
+    """Vérifie si le sender est un médecin autorisé."""
+    if not DOCTOR_NUMBERS:
+        return sender == AGENT_NUMBER.replace("whatsapp:", "")
+    return any(sender.endswith(n.replace("+", "")) for n in DOCTOR_NUMBERS)
 
 SYSTEM_PROMPT = f"""Tu es WaziHealth, assistant de triage médical pour {INSTITUTION_NAME}.
 Tu travailles pour {INSTITUTION_NAME} — clinique, cabinet médical ou pharmacie.
@@ -565,10 +576,16 @@ def book_slot(sender, slot, symptoms):
             "status":       "confirmed"
         }).execute()
         print(f"✅ RDV créé: {slot['date']} à {slot['time']}")
+        patient_id = hash_sender(sender)[:4].upper()
         notify_agent(
             sender,
-            f"📅 Nouveau RDV: {slot['date']} à {slot['time']}\n"
-            f"Symptômes: {symptoms[:100]}",
+            (
+                f"📅 *{slot['date']} à {slot['time']}*\n"
+                f"Patient #{patient_id}\n\n"
+                f"📋 Résumé consultation:\n"
+                f"{symptoms}\n\n"
+                f"📞 Appelez ce patient sur WhatsApp à l'heure du RDV"
+            ),
             triage_level="YELLOW"
         )
         return True
@@ -682,17 +699,64 @@ def is_doctor_treated(message):
     """Médecin marque un patient comme traité."""
     return message.upper().startswith("TRAITÉ") or message.upper().startswith("TRAITE")
 
+def is_doctor_cancel(message):
+    return message.upper().startswith("ANNULER")
+
+def parse_doctor_cancel(message):
+    """ANNULER 10h → supprime le slot."""
+    times = re.findall(r'\d+h\d*', message.lower())
+    if not times:
+        return "Format: ANNULER 10h"
+    for t in times:
+        supabase.table("slots")\
+            .delete()\
+            .eq("time", t)\
+            .eq("is_booked", False)\
+            .eq("date", str(date.today()))\
+            .execute()
+    return f"✅ Créneau(x) {', '.join(times)} annulé(s)"
+
 def is_agent_request(message):
     """Détecte si le patient veut parler à un agent."""
     return message.strip().upper() in ["AGENT", "PARLER", "HUMAIN", "AIDE"]
 
 def get_symptoms_summary(sender):
-    """Extrait le résumé des symptômes depuis la mémoire."""
-    symptom_msgs = [
-        m["content"] for m in conversations.get(sender, [])
-        if m.get("role") == "user" and len(m["content"]) > 3
-    ]
-    return " | ".join(symptom_msgs[-3:]) if symptom_msgs else "Non précisé"
+    """Génère un résumé lisible des symptômes via GPT."""
+    try:
+        msgs = [
+            m for m in conversations.get(sender, [])
+            if m.get("role") in ["user", "assistant"]
+        ]
+        if not msgs:
+            return "Non précisé"
+        summary = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Tu es un assistant médical. "
+                        "Résume en 3-4 lignes maximum la situation du patient "
+                        "basé sur cette conversation. "
+                        "Format: Profil / Symptôme principal / Durée / Signes associés. "
+                        "Sois concis et factuel."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": str(msgs[-10:])
+                }
+            ],
+            max_tokens=150
+        ).choices[0].message.content
+        return summary
+    except Exception as e:
+        print(f"❌ Summary error: {e}")
+        raw = [
+            m["content"] for m in conversations.get(sender, [])
+            if m.get("role") == "user" and len(m["content"]) > 2
+        ]
+        return " | ".join(raw[-4:]) if raw else "Non précisé"
 
 def is_location_request(sender, message):
     """Détecte si l'utilisateur cherche pharmacie ou hôpital."""
@@ -942,26 +1006,39 @@ def webhook():
         send_welcome_audio(sender)
         return str(r)
 
-    # ── Doctor DISPO management ─────────────────────────────
-    if is_doctor_dispo(incoming_text):
-        result = parse_doctor_availability(incoming_text)
-        r = MessagingResponse()
-        if result:
+    # ── Commandes médecin (whitelist) ──────────────────────
+    if is_doctor(sender):
+        if is_doctor_dispo(incoming_text):
+            result = parse_doctor_availability(incoming_text)
+            r = MessagingResponse()
+            r.message(result or "Format: DISPO demain 9h 10h 14h")
+            return str(r)
+
+        if is_doctor_cancel(incoming_text):
+            result = parse_doctor_cancel(incoming_text)
+            r = MessagingResponse()
             r.message(result)
-        else:
-            r.message("Format: DISPO demain 9h 10h 14h 15h")
-        return str(r)
+            return str(r)
 
-    if incoming_text.upper().strip() in ["FILE", "QUEUE", "PATIENTS"]:
-        send_queue_to_doctor()
-        r = MessagingResponse()
-        r.message("📋 File d'attente envoyée!")
-        return str(r)
+        if is_doctor_treated(incoming_text):
+            parts = incoming_text.split()
+            patient_id = parts[1] if len(parts) > 1 else ""
+            try:
+                supabase.table("appointments")\
+                    .update({"status": "treated"})\
+                    .ilike("session_hash", f"{patient_id.lower()}%")\
+                    .execute()
+            except Exception:
+                pass
+            r = MessagingResponse()
+            r.message(f"✅ Patient #{patient_id.upper()} marqué comme traité.")
+            return str(r)
 
-    if is_doctor_treated(incoming_text):
-        r = MessagingResponse()
-        r.message("✅ Patient marqué comme traité.")
-        return str(r)
+        if incoming_text.upper().strip() in ["FILE", "QUEUE", "PATIENTS"]:
+            send_queue_to_doctor()
+            r = MessagingResponse()
+            r.message("📋 File d'attente envoyée!")
+            return str(r)
 
     # ── Layer 1: Urgence critique ───────────────────────────
     if is_critical(incoming_text):
