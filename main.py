@@ -599,27 +599,92 @@ def book_slot(sender, slot, symptoms):
         return False
 
 def parse_doctor_availability(message):
-    """Parse 'DISPO demain 9h 10h 14h' → crée les slots."""
+    """
+    Supporte:
+    - DISPO demain 9h 10h 14h
+    - DISPO aujourd'hui 16h 17h
+    - DISPO semaine 9h 10h        → lundi au vendredi
+    - DISPO lundi 9h 10h
+    - DISPO 2026-03-10 9h 10h
+    Génère des slots de 30 min automatiquement.
+    """
     msg = message.lower()
-    if "demain" in msg:
-        target_date = date.today() + timedelta(days=1)
+    slots_to_create = []
+
+    target_dates = []
+    if "semaine" in msg:
+        today = date.today()
+        days_until_monday = (7 - today.weekday()) % 7 or 7
+        next_monday = today + timedelta(days=days_until_monday)
+        target_dates = [next_monday + timedelta(days=i) for i in range(5)]
+    elif "demain" in msg:
+        target_dates = [date.today() + timedelta(days=1)]
     elif "aujourd'hui" in msg or "auj" in msg:
-        target_date = date.today()
+        target_dates = [date.today()]
     elif "dans 2" in msg:
-        target_date = date.today() + timedelta(days=2)
+        target_dates = [date.today() + timedelta(days=2)]
     else:
-        return None
-    times = re.findall(r'\d+h\d*', msg)
-    if not times:
-        return None
-    for t in times:
-        supabase.table("slots").insert({
-            "doctor_id": "default",
-            "date":      str(target_date),
-            "time":      t,
-            "is_booked": False
-        }).execute()
-    return f"✅ {len(times)} créneau(x) ajouté(s) pour le {target_date}"
+        jours = {
+            "lundi": 0, "mardi": 1, "mercredi": 2,
+            "jeudi": 3, "vendredi": 4, "samedi": 5, "dimanche": 6
+        }
+        for jour, weekday in jours.items():
+            if jour in msg:
+                today = date.today()
+                days_ahead = (weekday - today.weekday()) % 7 or 7
+                target_dates = [today + timedelta(days=days_ahead)]
+                break
+
+        date_match = re.search(r'\d{4}-\d{2}-\d{2}', msg)
+        if date_match:
+            from datetime import datetime as dt_parse
+            target_dates = [dt_parse.strptime(date_match.group(), "%Y-%m-%d").date()]
+
+    if not target_dates:
+        return "❌ Format non reconnu.\nExemples:\n• DISPO demain 9h 10h 14h\n• DISPO semaine 9h 14h\n• DISPO lundi 10h 11h"
+
+    raw_times = re.findall(r'\d{1,2}h\d{0,2}', msg)
+    if not raw_times:
+        return "❌ Aucune heure trouvée.\nExemple: DISPO demain 9h 10h 14h"
+
+    def parse_time(t):
+        parts = t.replace("h", ":").split(":")
+        h = int(parts[0])
+        m = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+        return h, m
+
+    def format_slot(h, m):
+        return f"{h}h{m:02d}"
+
+    for t in raw_times:
+        h, m = parse_time(t)
+        slots_to_create.append(format_slot(h, m))
+        m2, h2 = (m + 30) % 60, h + (m + 30) // 60
+        slots_to_create.append(format_slot(h2, m2))
+
+    count = 0
+    for target_date in target_dates:
+        for slot_time in slots_to_create:
+            existing = supabase.table("slots")\
+                .select("id")\
+                .eq("date", str(target_date))\
+                .eq("time", slot_time)\
+                .execute()\
+                .data
+            if not existing:
+                supabase.table("slots").insert({
+                    "doctor_id": "default",
+                    "date":      str(target_date),
+                    "time":      slot_time,
+                    "is_booked": False
+                }).execute()
+                count += 1
+
+    if len(target_dates) == 1:
+        return f"✅ {count} créneau(x) ajouté(s) pour le {target_dates[0]}"
+    else:
+        dates_str = f"{target_dates[0]} → {target_dates[-1]}"
+        return f"✅ {count} créneau(x) ajouté(s) du {dates_str}"
 
 def send_queue_to_doctor():
     """Envoie la file d'attente au médecin ET à l'agent."""
