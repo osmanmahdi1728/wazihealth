@@ -410,22 +410,31 @@ def send_welcome_audio(sender):
     t = threading.Thread(target=_send, daemon=True)
     t.start()
 
-def notify_agent(sender, summary):
-    """Notifie l'agent/médecin sur ROUGE."""
+def notify_agent(sender, summary, triage_level="RED"):
+    """Notifie l'agent/médecin avec le bon niveau."""
     if not AGENT_NUMBER:
         print("⚠️ AGENT_NUMBER non configuré")
         return
     try:
+        if triage_level == "RED":
+            emoji = "🔴"
+            urgency = "PATIENT URGENT"
+        elif triage_level == "YELLOW":
+            emoji = "🟡"
+            urgency = "NOUVEAU RDV"
+        else:
+            emoji = "🟢"
+            urgency = "INFO PATIENT"
         twilio_client.messages.create(
             from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
             to=AGENT_NUMBER,
             body=(
-                f"🔴 *PATIENT URGENT — {INSTITUTION_NAME}*\n\n"
-                f"Résumé: {summary}\n\n"
+                f"{emoji} *{urgency} — {INSTITUTION_NAME}*\n\n"
+                f"{summary}\n\n"
                 f"Répondez à ce message pour contacter le patient."
             )
         )
-        print(f"✅ Agent notifié: {AGENT_NUMBER}")
+        print(f"✅ Agent notifié ({triage_level}): {AGENT_NUMBER}")
     except Exception as e:
         print(f"❌ Agent notify error: {e}")
 
@@ -559,7 +568,8 @@ def book_slot(sender, slot, symptoms):
         notify_agent(
             sender,
             f"📅 Nouveau RDV: {slot['date']} à {slot['time']}\n"
-            f"Symptômes: {symptoms[:100]}"
+            f"Symptômes: {symptoms[:100]}",
+            triage_level="YELLOW"
         )
         return True
     except Exception as e:
@@ -622,6 +632,32 @@ def send_queue_to_doctor():
             print(f"✅ File d'attente envoyée: {len(appointments)} RDV")
     except Exception as e:
         print(f"❌ Queue error: {e}")
+
+def send_appointment_reminders():
+    """Envoie un rappel WhatsApp 30 min avant chaque RDV."""
+    try:
+        from datetime import datetime
+        now = datetime.now()
+        reminder_time = (now + timedelta(minutes=30)).strftime("%H:%M")
+        appointments = supabase.table("appointments")\
+            .select("*")\
+            .eq("date", str(date.today()))\
+            .eq("status", "confirmed")\
+            .execute()\
+            .data
+        for apt in appointments:
+            apt_time = apt["time"].replace("h", ":").zfill(5)
+            if apt_time == reminder_time:
+                print(f"⏰ Rappel dû pour {apt['session_hash'][:4]} à {apt['time']}")
+                notify_agent(
+                    "system",
+                    f"⏰ Rappel: RDV dans 30 min\n"
+                    f"Patient #{apt['session_hash'][:4].upper()}\n"
+                    f"Symptômes: {apt['symptoms'][:80]}",
+                    triage_level="YELLOW"
+                )
+    except Exception as e:
+        print(f"❌ Reminder error: {e}")
 
 def is_booking_trigger(message):
     triggers = [
@@ -932,7 +968,7 @@ def webhook():
         print("🚨 CRITIQUE")
         log_to_db(sender, "assistant", EMERGENCY_RESPONSE, triage_level="RED", is_emergency=True)
         conversations.pop(sender, None)
-        notify_agent(sender, f"Mots-clés urgence détectés: '{incoming_text[:100]}'")
+        notify_agent(sender, f"Mots-clés urgence détectés: '{incoming_text[:100]}'", triage_level="RED")
         r = MessagingResponse()
         r.message(EMERGENCY_RESPONSE)
         return str(r)
@@ -995,8 +1031,7 @@ def webhook():
                         confirmation = (
                             f"✅ *RDV confirmé!*\n\n"
                             f"📅 {s['date']} à {s['time']}\n"
-                            f"📞 Le médecin vous appellera sur WhatsApp\n"
-                            f"⏰ Rappel 30 min avant votre RDV\n\n"
+                            f"📞 Le médecin vous appellera sur ce numéro WhatsApp\n\n"
                             f"Préparez:\n"
                             f"• Ce résumé de symptômes\n"
                             f"• Vos médicaments actuels\n\n"
@@ -1086,6 +1121,7 @@ def webhook():
 
 def run_schedule():
     schedule.every().day.at("08:00").do(send_queue_to_doctor)
+    schedule.every(1).minutes.do(send_appointment_reminders)
     while True:
         schedule.run_pending()
         time_module.sleep(60)
