@@ -134,89 +134,46 @@ DIAGNOSTIC FINAL — FORMAT PAR NIVEAU
 ━━━━━━━━━━━━━━━━━━━━━━
 
 ── FORMAT VERT ──────────────────────────
-🟢 [Condition probable]
-
-🔍 Ce que ça ressemble à:
-[1-2 phrases simples]
-
-💊 En attendant:
-   • [action 1]
-   • [action 2]
-   • ❌ Évitez: [1 chose]
-
-🍽️ Quoi manger et boire:
-   • [aliment 1] / [aliment 2]
-   • 💧 [conseil hydratation]
-
-🏥 Allez directement à la pharmacie:
-   • Montrez ce message au pharmacien
-   • Demandez: "[mots exacts]"
-   • Prix estimé: ~[montant] CFA
-   • 📍 https://maps.google.com/?q=pharmacie
-
-📚 En savoir plus:
-   • 🌐 [lien WHO]
-   • 📹 [lien YouTube]
-
+🟢 *Conseil pharmacie*
+*Ce que ça ressemble à:* _[1 phrase]_
+*À faire:*
+• [médicament + dosage]
+• [conseil]
+• ❌ Évitez [contre-indication]
+💊 Pharmacie: https://maps.google.com/?q=pharmacie
+🏥 Hôpital si besoin: https://maps.google.com/?q=hopital
+📚 En savoir plus — Répondez INFO
 ━━━━━━━━━━━━━━━━━━━━━━
-💬 Besoin d'aide supplémentaire?
-   Répondez *AGENT* pour parler à quelqu'un
-🙏 Cette réponse vous a-t-elle aidé?
-1️⃣ Oui   2️⃣ Partiellement   3️⃣ Non
+💬 Répondez AGENT pour parler à quelqu'un
+🙏 Cette réponse vous a-t-elle aidé? OUI ou NON
 ━━━━━━━━━━━━━━━━━━━━━━
-⚠️ Ceci ne remplace pas un médecin.
+_Ceci ne remplace pas un médecin._
 
 ── FORMAT JAUNE ─────────────────────────
-🟡 [Condition probable — consultation recommandée]
-
-🔍 Ce que ça ressemble à:
-[1-2 phrases simples]
-
-💊 En attendant votre consultation:
-   • [action 1]
-   • [action 2]
-   • ❌ Évitez: [1 chose]
-
-🍽️ Quoi manger et boire:
-   • [aliment 1] / [aliment 2]
-   • 💧 [conseil hydratation]
-
-📋 Résumé pour votre médecin:
-   • Symptôme: [résumé court]
-   • Depuis: [durée]
-   • Signes associés: [liste courte]
-   • Profil: [âge/situation]
-
-📅 Prenez rendez-vous:
-   Répondez *RENDEZ-VOUS* pour choisir
-   un créneau directement ici
-
-📚 En savoir plus:
-   • 🌐 [lien WHO]
-   • 📹 [lien YouTube]
-
+🟡 *Consultation recommandée*
+*Ce que ça ressemble à:* _[1 phrase]_
+*En attendant:*
+• [médicament + dosage]
+• [hydratation]
+• ❌ Évitez [contre-indication]
+*🍽️ Mangez:* [aliment 1], [aliment 2]
+*📋 Pour votre médecin:* _[symptôme] depuis [durée]_
+📅 RDV — Répondez RENDEZ-VOUS
+💊 Pharmacie: https://maps.google.com/?q=pharmacie
+🏥 Hôpital: https://maps.google.com/?q=hopital
+📚 En savoir plus — Répondez INFO
 ━━━━━━━━━━━━━━━━━━━━━━
-💬 Besoin d'aide supplémentaire?
-   Répondez *AGENT* pour parler à quelqu'un
-🙏 Cette réponse vous a-t-elle aidé?
-1️⃣ Oui   2️⃣ Partiellement   3️⃣ Non
+💬 Répondez AGENT pour parler à quelqu'un
+🙏 Cette réponse vous a-t-elle aidé? OUI ou NON
 ━━━━━━━━━━━━━━━━━━━━━━
-⚠️ Ceci ne remplace pas un médecin.
+_Ceci ne remplace pas un médecin._
 
 ── FORMAT ROUGE ─────────────────────────
-🔴 [Situation grave — allez aux urgences]
-
-⚠️ Ne restez pas seul(e).
-Allez aux urgences maintenant ou appelez le 15.
-
-🚨 En attendant les secours:
-   • [1 seule action immédiate et simple]
-   • ❌ Ne prenez rien sans avis médical
-
-📍 Urgences les plus proches:
-   https://maps.google.com/?q=urgences+hopital
-
-Un agent va vous contacter dans les prochaines minutes.
+🔴 *Urgences — allez maintenant*
+_[raison en 1 phrase]_
+🚨 Appelez le 15 / 18
+🏥 Urgences: https://maps.google.com/?q=urgences+hopital
+_Ne conduisez pas seul._
 
 URGENCES → ROUGE IMMÉDIAT sans questions:
 - Inconscient / ne répond pas
@@ -940,13 +897,9 @@ def send_queue_to_doctor(requester=None):
             msg += f"📋 *FILE — {date.today().strftime('%d/%m')}*\n"
             msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             for apt in appointments:
-                emoji  = "🔴" if apt["triage_level"] == "RED" else "🟡"
-                pid    = apt["session_hash"][:4].upper()
-                status = "✅" if apt["status"] == "treated" else "⏳"
-                short  = apt["symptoms"].split("\n")[0][:50] if apt["symptoms"] else "—"
-                msg += f"{emoji} *{apt['time']}* {status} #{pid}\n_{short}_\n\n"
+                msg += format_appointment_summary(apt) + "\n"
+            msg += f"\n━━━━━━━━━━━━━━━━━━━━━━\n"
             treated = sum(1 for a in appointments if a["status"] == "treated")
-            msg += f"━━━━━━━━━━━━━━━━━━━━━━\n"
             msg += f"*{len(appointments)} RDV — ✅{treated} ⏳{len(appointments)-treated}*"
 
         if requester:
@@ -1002,10 +955,7 @@ def send_week_queue(requester):
                 if apt["date"] != current_date:
                     current_date = apt["date"]
                     msg += f"📅 *{current_date}*\n"
-                emoji = "🔴" if apt["triage_level"] == "RED" else "🟡"
-                pid = apt["session_hash"][:4].upper()
-                short = apt["symptoms"].split("\n")[0][:50] if apt["symptoms"] else "Non précisé"
-                msg += f"  {emoji} {apt['time']} — #{pid} — _{short}_\n"
+                msg += f"  {format_appointment_summary(apt)}\n"
             msg += f"\n━━━━━━━━━━━━━━━━━━━━━━\n"
             msg += f"*Total semaine: {len(appointments)} RDV*"
 
@@ -1042,13 +992,8 @@ def send_next_24h_queue(requester):
                     current_date = apt["date"]
                     label = "Aujourd'hui" if current_date == str(date.today()) else "Demain"
                     msg += f"📅 *{label}*\n"
-                emoji  = "🔴" if apt["triage_level"] == "RED" else "🟡"
-                pid    = apt["session_hash"][:4].upper()
-                status = "✅" if apt["status"] == "treated" else "⏳"
-                short  = apt["symptoms"].split("\n")[0][:50] if apt["symptoms"] else "—"
-                msg += f"  {emoji} *{apt['time']}* {status} #{pid}\n"
-                msg += f"  _{short}_\n\n"
-            msg += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                msg += f"  {format_appointment_summary(apt)}\n"
+            msg += f"\n━━━━━━━━━━━━━━━━━━━━━━\n"
             msg += f"*Total: {len(appointments)} patients*"
 
         twilio_client.messages.create(
@@ -1224,6 +1169,35 @@ def get_symptoms_summary(sender):
             if m.get("role") == "user" and len(m["content"]) > 2
         ]
         return " | ".join(raw[-4:]) if raw else "Non précisé"
+
+def format_appointment_summary(apt):
+    """Formate un RDV en 1 ligne courte pour FILE/PROCHAIN/AGENDA."""
+    emoji  = "🔴" if apt.get("triage_level") == "RED" else "🟡"
+    pid    = apt.get("session_hash", "????")[:4].upper()
+    time   = apt.get("time", "?h")
+    status = "✅" if apt.get("status") == "treated" else "⏳"
+    symptoms_raw = apt.get("symptoms", "") or ""
+    first_line = symptoms_raw.split("\n")[0][:60]
+    short = first_line\
+        .replace("Profil: ", "")\
+        .replace("Adulte / ", "")\
+        .replace("Enfant / ", "")\
+        .replace("Symptôme principal: ", "")\
+        .replace("Symptôme: ", "")\
+        .replace("Signes associés: ", "")\
+        .replace("depuis aujourd'hui", "1j")\
+        .replace("depuis 2 jours ou plus", "2j+")\
+        .replace("depuis 2 jours", "2j")\
+        .replace("Douleur abdominale", "Doul. ventre")\
+        .replace("Douleur thoracique", "Doul. poitrine")\
+        .replace("Difficultés à respirer", "Resp. difficile")\
+        .replace("Frissons ou tremblements", "Frissons")\
+        .replace("Mal de tête fort", "Céphalées")\
+        .strip()
+    if len(short) > 50:
+        short = short[:47] + "..."
+    return f"{emoji} *{time}* {status} #{pid} — _{short}_"
+
 
 def is_location_request(sender, message):
     """Détecte si l'utilisateur cherche pharmacie ou hôpital."""
