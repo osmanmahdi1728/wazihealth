@@ -1170,12 +1170,15 @@ def webhook():
                 f"👨‍⚕️ *Bonjour Docteur — {INSTITUTION_NAME}*\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📅 *Gérer vos créneaux:*\n"
-                f"• `DISPO demain 9h 10h 14h`\n"
-                f"• `ANNULER 10h`\n\n"
+                f"• DISPO demain 9h 10h 14h\n"
+                f"• DISPO semaine 9h 14h\n"
+                f"• ANNULER 10h\n\n"
                 f"📋 *Voir l'agenda:*\n"
-                f"• `FILE` → liste du jour\n\n"
+                f"• FILE → liste du jour\n\n"
                 f"✅ *Après chaque appel:*\n"
-                f"• `TRAITÉ XXXX`\n\n"
+                f"• TRAITÉ XXXX\n\n"
+                f"🧑 *Tester comme patient:*\n"
+                f"• PATIENT → mode patient\n\n"
                 f"🆘 *Vous recevez automatiquement:*\n"
                 f"• 🆕 Nouveaux RDV + résumé patient\n"
                 f"• 🚨 Urgences immédiates\n"
@@ -1238,6 +1241,37 @@ def webhook():
     # ── Reset session ───────────────────────────────────────
     if incoming_text.lower() in ["reset", "recommencer", "nouvelle consultation"]:
         conversations.pop(sender, None)
+
+        if is_doctor(sender):
+            doctor_menu = (
+                f"👨‍⚕️ *Session réinitialisée — {INSTITUTION_NAME}*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📅 *Disponibilités:*\n"
+                f"• DISPO demain 9h 10h 14h\n"
+                f"• DISPO semaine 9h 14h\n"
+                f"• ANNULER 10h\n\n"
+                f"📋 *Agenda:* FILE\n\n"
+                f"✅ *Après appel:* TRAITÉ XXXX\n\n"
+                f"🧑 *Tester comme patient:* PATIENT\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            r = MessagingResponse()
+            r.message(doctor_menu)
+            return str(r)
+
+        sender_clean = sender.replace("whatsapp:", "")
+        if AGENT_NUMBER and sender_clean in AGENT_NUMBER:
+            agent_menu = (
+                f"👤 *Session réinitialisée — Agent {INSTITUTION_NAME}*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📋 *Agenda:* FILE\n"
+                f"✅ *Après appel:* TRAITÉ XXXX\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            r = MessagingResponse()
+            r.message(agent_menu)
+            return str(r)
+
         profile_question = (
             f"👋 Bonjour! Je suis l'assistant de {INSTITUTION_NAME} 🏥\n\n"
             "Je peux vous aider à:\n"
@@ -1251,21 +1285,45 @@ def webhook():
             "3️⃣ Personne âgée (60 ans et plus)\n"
             "4️⃣ Autre profil (enceinte, maladie chronique...)"
         )
-        conversations[sender] = [{
-            "role": "assistant",
-            "content": profile_question
-        }]
+        conversations[sender] = [{"role": "assistant", "content": profile_question}]
         r = MessagingResponse()
         r.message(profile_question)
         send_welcome_audio(sender)
         return str(r)
 
-    # ── Layer 0: Intent detection pour médecin/agent ───────
+    # ── Détection rôle ──────────────────────────────────────
     is_doc = is_doctor(sender)
     sender_clean = sender.replace("whatsapp:", "")
     is_agt = AGENT_NUMBER and sender_clean in AGENT_NUMBER
 
+    in_patient_mode = any(
+        m.get("content") == "PATIENT_MODE:true"
+        for m in conversations.get(sender, [])
+    )
+    if in_patient_mode:
+        is_doc = False
+        is_agt = False
+
+    # ── Commandes médecin/agent ─────────────────────────────
     if is_doc or is_agt:
+        if incoming_text.upper().strip() == "PATIENT":
+            conversations[sender] = []
+            profile_question = (
+                f"👋 Mode patient activé — {INSTITUTION_NAME} 🏥\n\n"
+                "Qui consulte aujourd'hui?\n\n"
+                "1️⃣ Adulte (18-60 ans)\n"
+                "2️⃣ Enfant (2-17 ans)\n"
+                "3️⃣ Personne âgée (60 ans et plus)\n"
+                "4️⃣ Autre profil (enceinte, maladie chronique...)"
+            )
+            conversations[sender] = [
+                {"role": "assistant", "content": profile_question},
+                {"role": "system",    "content": "PATIENT_MODE:true"}
+            ]
+            r = MessagingResponse()
+            r.message(profile_question)
+            return str(r)
+
         intent = detect_intent(sender, incoming_text)
         action = intent.get("intent")
         params = intent.get("params", {})
