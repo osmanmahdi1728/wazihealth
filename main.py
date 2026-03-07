@@ -645,7 +645,11 @@ def is_profile_response(sender, message):
     if sender not in conversations or not conversations[sender]:
         return False
     last = conversations[sender][-1]["content"].lower()
-    return "qui consulte" in last or "patient mode" in last
+    return (
+        "qui consulte" in last or
+        "mode patient" in last or
+        "qui consulte aujourd" in last
+    )
 
 
 def is_feedback(sender, message):
@@ -1639,36 +1643,32 @@ def webhook():
             r.message("❓ Commande non reconnue.\nEnvoyez *AIDE* pour voir les commandes disponibles.")
             return str(r)
 
-    # ── Layer 0b: Profil sélectionné → template symptômes ───
+    # ── Layer 2f: Profil → template symptômes ──────────────
     if is_profile_response(sender, incoming_text):
         conversations[sender].append({
             "role": "user",
             "content": incoming_text
         })
         sent = send_template(sender, TEMPLATE_SYMPTOMES_SID)
+        symptom_msg = (
+            "Qu'est-ce qui ne va pas et depuis quand?\n\n"
+            "1️⃣ Fièvre — depuis aujourd'hui\n"
+            "2️⃣ Fièvre — depuis 2 jours ou plus\n"
+            "3️⃣ Douleur (tête, ventre, dos)\n"
+            "4️⃣ Toux / difficultés à respirer\n"
+            "5️⃣ Problèmes digestifs\n"
+            "6️⃣ Problème de peau\n"
+            "7️⃣ Fatigue / faiblesse\n"
+            "8️⃣ Autre"
+        )
+        conversations[sender].append({
+            "role": "assistant",
+            "content": symptom_msg
+        })
         if not sent:
-            symptom_msg = (
-                "Qu'est-ce qui ne va pas et depuis quand?\n\n"
-                "1️⃣ Fièvre — depuis aujourd'hui\n"
-                "2️⃣ Fièvre — depuis 2 jours ou plus\n"
-                "3️⃣ Douleur (tête, ventre, dos)\n"
-                "4️⃣ Toux / difficultés à respirer\n"
-                "5️⃣ Problèmes digestifs\n"
-                "6️⃣ Problème de peau\n"
-                "7️⃣ Fatigue / faiblesse\n"
-                "8️⃣ Autre"
-            )
-            conversations[sender].append({
-                "role": "assistant",
-                "content": symptom_msg
-            })
             r = MessagingResponse()
             r.message(symptom_msg)
             return str(r)
-        conversations[sender].append({
-            "role": "assistant",
-            "content": "Template symptômes envoyé"
-        })
         return ("", 204)
 
     # ── Layer 1: Urgence critique ───────────────────────────
