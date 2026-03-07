@@ -617,7 +617,7 @@ def parse_doctor_availability(message):
     return f"✅ {len(times)} créneau(x) ajouté(s) pour le {target_date}"
 
 def send_queue_to_doctor():
-    """Envoie la file d'attente du jour au médecin à 8h."""
+    """Envoie la file d'attente au médecin ET à l'agent."""
     try:
         appointments = supabase.table("appointments")\
             .select("*")\
@@ -640,13 +640,21 @@ def send_queue_to_doctor():
                 f"   {apt['symptoms'][:80]}\n\n"
             )
         msg += "━"*25
+        recipients = set()
         if AGENT_NUMBER:
-            twilio_client.messages.create(
-                from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
-                to=AGENT_NUMBER,
-                body=msg
-            )
-            print(f"✅ File d'attente envoyée: {len(appointments)} RDV")
+            recipients.add(AGENT_NUMBER)
+        for num in DOCTOR_NUMBERS:
+            recipients.add(f"whatsapp:{num}")
+        for recipient in recipients:
+            try:
+                twilio_client.messages.create(
+                    from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+                    to=recipient,
+                    body=msg
+                )
+                print(f"✅ File envoyée à: {recipient}")
+            except Exception as e:
+                print(f"❌ Erreur envoi {recipient}: {e}")
     except Exception as e:
         print(f"❌ Queue error: {e}")
 
@@ -1040,6 +1048,15 @@ def webhook():
             r.message("📋 File d'attente envoyée!")
             return str(r)
 
+    # ── Commande FILE — agent non-médecin ──────────────────
+    if incoming_text.upper().strip() in ["FILE", "QUEUE", "PATIENTS"]:
+        sender_clean = sender.replace("whatsapp:", "")
+        if sender == AGENT_NUMBER or sender_clean in AGENT_NUMBER:
+            send_queue_to_doctor()
+            r = MessagingResponse()
+            r.message("📋 File d'attente envoyée!")
+            return str(r)
+
     # ── Layer 1: Urgence critique ───────────────────────────
     if is_critical(incoming_text):
         print("🚨 CRITIQUE")
@@ -1197,7 +1214,7 @@ def webhook():
     return str(r)
 
 def run_schedule():
-    schedule.every().day.at("08:00").do(send_queue_to_doctor)
+    schedule.every().day.at("12:00").do(send_queue_to_doctor)
     schedule.every(1).minutes.do(send_appointment_reminders)
     while True:
         schedule.run_pending()
