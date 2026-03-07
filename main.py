@@ -1,6 +1,6 @@
-import os, hashlib, tempfile, threading, requests, re
+import os, hashlib, tempfile, threading, requests, re, json
 import schedule, time as time_module
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
@@ -637,8 +637,7 @@ def parse_doctor_availability(message):
 
         date_match = re.search(r'\d{4}-\d{2}-\d{2}', msg)
         if date_match:
-            from datetime import datetime as dt_parse
-            target_dates = [dt_parse.strptime(date_match.group(), "%Y-%m-%d").date()]
+            target_dates = [datetime.strptime(date_match.group(), "%Y-%m-%d").date()]
 
     if not target_dates:
         return "❌ Format non reconnu.\nExemples:\n• DISPO demain 9h 10h 14h\n• DISPO semaine 9h 14h\n• DISPO lundi 10h 11h"
@@ -685,6 +684,72 @@ def parse_doctor_availability(message):
     else:
         dates_str = f"{target_dates[0]} → {target_dates[-1]}"
         return f"✅ {count} créneau(x) ajouté(s) du {dates_str}"
+
+
+def detect_intent(sender, message):
+    """
+    Détecte l'intention du message via GPT.
+    Retourne un dict avec l'intention et les paramètres.
+    """
+    is_doc = is_doctor(sender)
+    is_agt = AGENT_NUMBER and sender.replace("whatsapp:", "") in AGENT_NUMBER
+    role = "médecin" if is_doc else ("agent" if is_agt else "patient")
+
+    try:
+        result = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "system",
+                "content": f"""Tu analyses des messages WhatsApp pour WaziHealth.
+L'expéditeur est: {role}
+Retourne UNIQUEMENT un JSON avec:
+{{
+  "intent": "dispo|annuler|file|traite|aide|booking|agent|reset|urgence|patient",
+  "params": {{}}
+}}
+
+Intentions possibles:
+- "dispo"    → médecin veut ajouter des disponibilités
+              params: {{"raw": "le message original"}}
+- "annuler"  → médecin veut annuler un créneau
+              params: {{"raw": "le message original"}}
+- "file"     → voir la liste des RDV du jour
+- "traite"   → marquer un patient comme traité
+              params: {{"patient_id": "XXXX ou vide"}}
+- "aide"     → demande le guide des commandes
+- "booking"  → patient veut prendre un RDV
+- "agent"    → patient veut parler à un humain
+- "reset"    → recommencer la conversation
+- "urgence"  → situation d'urgence médicale
+- "patient"  → message patient normal (symptômes etc.)
+
+Exemples:
+"j'ai du temps demain de 9 à 12"     → dispo
+"je suis libre lundi matin"           → dispo
+"annule le 10h"                       → annuler
+"montre moi mes rendez vous"          → file
+"j'ai appelé le patient A3F2"         → traite
+"je veux un rdv"                      → booking
+"parler à quelqu'un"                  → agent
+"il s'est évanoui"                    → urgence
+"""
+            }, {
+                "role": "user",
+                "content": message
+            }],
+            max_tokens=100,
+            temperature=0
+        ).choices[0].message.content
+
+        result = result.strip()
+        if "```" in result:
+            result = result.split("```")[1].replace("json", "").strip()
+        return json.loads(result)
+
+    except Exception as e:
+        print(f"❌ Intent detection error: {e}")
+        return {"intent": "patient", "params": {}}
+
 
 def send_queue_to_doctor():
     """Envoie la file d'attente au médecin ET à l'agent."""
@@ -737,7 +802,6 @@ def send_queue_to_doctor():
 def send_appointment_reminders():
     """Rappel 30 min avant chaque RDV — agent + médecin."""
     try:
-        from datetime import datetime
         now = datetime.utcnow()
         future = now + timedelta(minutes=30)
         future_time = f"{future.hour}h{future.minute:02d}"
@@ -1196,47 +1260,76 @@ def webhook():
         send_welcome_audio(sender)
         return str(r)
 
-    # ── Commandes médecin (whitelist) ──────────────────────
-    if is_doctor(sender):
-        if is_doctor_dispo(incoming_text):
-            result = parse_doctor_availability(incoming_text)
+    # ── Layer 0: Intent detection pour médecin/agent ───────
+    is_doc = is_doctor(sender)
+    sender_clean = sender.replace("whatsapp:", "")
+    is_agt = AGENT_NUMBER and sender_clean in AGENT_NUMBER
+
+    if is_doc or is_agt:
+        intent = detect_intent(sender, incoming_text)
+        action = intent.get("intent")
+        params = intent.get("params", {})
+
+        if action == "dispo" and is_doc:
+            raw = params.get("raw", incoming_text)
+            result = parse_doctor_availability(raw)
             r = MessagingResponse()
-            r.message(result or "Format: DISPO demain 9h 10h 14h")
+            r.message(result or "❌ Format non reconnu.\nEx: DISPO demain 9h 10h 14h")
             return str(r)
 
-        if is_doctor_cancel(incoming_text):
-            result = parse_doctor_cancel(incoming_text)
+        if action == "annuler" and is_doc:
+            raw = params.get("raw", incoming_text)
+            result = parse_doctor_cancel(raw)
             r = MessagingResponse()
             r.message(result)
             return str(r)
 
-        if is_doctor_treated(incoming_text):
-            parts = incoming_text.split()
-            patient_id = parts[1] if len(parts) > 1 else ""
-            try:
-                supabase.table("appointments")\
-                    .update({"status": "treated"})\
-                    .ilike("session_hash", f"{patient_id.lower()}%")\
-                    .execute()
-            except Exception:
-                pass
-            r = MessagingResponse()
-            r.message(f"✅ Patient #{patient_id.upper()} marqué comme traité.")
-            return str(r)
-
-        if incoming_text.upper().strip() in ["FILE", "QUEUE", "PATIENTS"]:
+        if action == "file":
             send_queue_to_doctor()
             r = MessagingResponse()
             r.message("📋 File d'attente envoyée!")
             return str(r)
 
-    # ── Commande FILE — agent non-médecin ──────────────────
-    if incoming_text.upper().strip() in ["FILE", "QUEUE", "PATIENTS"]:
-        sender_clean = sender.replace("whatsapp:", "")
-        if sender == AGENT_NUMBER or sender_clean in AGENT_NUMBER:
-            send_queue_to_doctor()
+        if action == "traite":
+            pid = params.get("patient_id", "")
+            if pid:
+                try:
+                    supabase.table("appointments")\
+                        .update({"status": "treated"})\
+                        .ilike("session_hash", f"{pid.lower()}%")\
+                        .execute()
+                    msg = f"✅ Patient #{pid.upper()} marqué comme traité."
+                except Exception:
+                    msg = "❌ Erreur mise à jour."
+            else:
+                msg = "Quel patient? Ex: TRAITÉ A3F2"
             r = MessagingResponse()
-            r.message("📋 File d'attente envoyée!")
+            r.message(msg)
+            return str(r)
+
+        if action == "aide":
+            guide = (
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📖 *GUIDE {INSTITUTION_NAME}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"📅 *Disponibilités:*\n"
+                f"• DISPO demain 9h 10h 14h\n"
+                f"• DISPO semaine 9h 14h\n"
+                f"• DISPO lundi 10h 11h\n"
+                f"• ANNULER 10h\n\n"
+                f"📋 *Agenda:*\n"
+                f"• FILE → liste du jour\n\n"
+                f"✅ *Après appel:*\n"
+                f"• TRAITÉ XXXX\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            r = MessagingResponse()
+            r.message(guide)
+            return str(r)
+
+        if action != "patient":
+            r = MessagingResponse()
+            r.message("❓ Commande non reconnue.\nEnvoyez *AIDE* pour voir les commandes disponibles.")
             return str(r)
 
     # ── Layer 1: Urgence critique ───────────────────────────
@@ -1256,30 +1349,6 @@ def webhook():
         conversations.pop(sender, None)
         r = MessagingResponse()
         r.message(HANDOFF_RESPONSE)
-        return str(r)
-
-    # ── Commande AIDE — guide médecin/agent ─────────────────
-    if incoming_text.upper().strip() == "AIDE" and (is_doctor(sender) or sender == AGENT_NUMBER):
-        guide = (
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📖 *GUIDE {INSTITUTION_NAME}*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📅 *Gérer vos créneaux:*\n"
-            "• `DISPO demain 9h 10h 11h30 14h`\n"
-            "• `DISPO aujourd'hui 16h 17h`\n"
-            "• `ANNULER 10h`\n\n"
-            "📋 *Voir l'agenda:*\n"
-            "• `FILE` → liste du jour\n\n"
-            "✅ *Après chaque appel:*\n"
-            "• `TRAITÉ XXXX`\n\n"
-            "🆘 *Vous recevez auto:*\n"
-            "• 🆕 Nouveau RDV + résumé\n"
-            "• 🚨 Urgences immédiates\n"
-            "• 📋 File à 8h chaque matin\n"
-            "━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        r = MessagingResponse()
-        r.message(guide)
         return str(r)
 
     # ── Layer 2b: Demande agent direct ─────────────────────
