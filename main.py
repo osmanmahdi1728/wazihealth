@@ -638,6 +638,16 @@ def is_handoff_request(sender, message):
     # Handoff seulement si la dernière question demande explicitement OUI/NON
     return "répondez oui ou non" in last
 
+def is_profile_response(sender, message):
+    """Détecte si le message est une réponse au profil."""
+    if message.strip() not in ["1", "2", "3", "4"]:
+        return False
+    if sender not in conversations or not conversations[sender]:
+        return False
+    last = conversations[sender][-1]["content"].lower()
+    return "qui consulte" in last or "patient mode" in last
+
+
 def is_feedback(sender, message):
     """Feedback sur 1/2/3 après question feedback."""
     if message.strip() not in ["1", "2", "3"]:
@@ -1628,6 +1638,38 @@ def webhook():
             r = MessagingResponse()
             r.message("❓ Commande non reconnue.\nEnvoyez *AIDE* pour voir les commandes disponibles.")
             return str(r)
+
+    # ── Layer 0b: Profil sélectionné → template symptômes ───
+    if is_profile_response(sender, incoming_text):
+        conversations[sender].append({
+            "role": "user",
+            "content": incoming_text
+        })
+        sent = send_template(sender, TEMPLATE_SYMPTOMES_SID)
+        if not sent:
+            symptom_msg = (
+                "Qu'est-ce qui ne va pas et depuis quand?\n\n"
+                "1️⃣ Fièvre — depuis aujourd'hui\n"
+                "2️⃣ Fièvre — depuis 2 jours ou plus\n"
+                "3️⃣ Douleur (tête, ventre, dos)\n"
+                "4️⃣ Toux / difficultés à respirer\n"
+                "5️⃣ Problèmes digestifs\n"
+                "6️⃣ Problème de peau\n"
+                "7️⃣ Fatigue / faiblesse\n"
+                "8️⃣ Autre"
+            )
+            conversations[sender].append({
+                "role": "assistant",
+                "content": symptom_msg
+            })
+            r = MessagingResponse()
+            r.message(symptom_msg)
+            return str(r)
+        conversations[sender].append({
+            "role": "assistant",
+            "content": "Template symptômes envoyé"
+        })
+        return ("", 204)
 
     # ── Layer 1: Urgence critique ───────────────────────────
     if is_critical(incoming_text):
