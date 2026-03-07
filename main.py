@@ -366,7 +366,7 @@ RESOURCES = {
 FEEDBACK_CHOICES = {"1": "utile", "2": "partiel", "3": "non_utile"}
 
 # ── Booking config ─────────────────────────────────────────
-BOOKING_TIMES = {"1": "9h00", "2": "10h00", "3": "11h00"}
+# Heures viennent dynamiquement de Supabase (slots table)
 
 # ── Welcome audio ──────────────────────────────────────────
 WELCOME_AUDIO_URL = None
@@ -428,22 +428,25 @@ def notify_agent(sender, summary, triage_level="RED"):
         return
     try:
         if triage_level == "RED":
-            emoji = "🔴"
-            urgency = "PATIENT URGENT"
+            header = "🚨 *URGENCE — ACTION IMMÉDIATE*"
+            separator = "🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴"
         elif triage_level == "YELLOW":
-            emoji = "🟡"
-            urgency = "NOUVEAU RDV"
+            header = "🆕 *NOUVEAU RDV*"
+            separator = "━━━━━━━━━━━━━━━━━━━━━━"
         else:
-            emoji = "🟢"
-            urgency = "INFO PATIENT"
+            header = "ℹ️ *INFO PATIENT*"
+            separator = "━━━━━━━━━━━━━━━━━━━━━━"
+        body = (
+            f"{separator}\n"
+            f"{header} — {INSTITUTION_NAME}\n"
+            f"{separator}\n\n"
+            f"{summary}\n\n"
+            f"{separator}"
+        )
         twilio_client.messages.create(
             from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
             to=AGENT_NUMBER,
-            body=(
-                f"{emoji} *{urgency} — {INSTITUTION_NAME}*\n\n"
-                f"{summary}\n\n"
-                f"Répondez à ce message pour contacter le patient."
-            )
+            body=body
         )
         print(f"✅ Agent notifié ({triage_level}): {AGENT_NUMBER}")
     except Exception as e:
@@ -580,11 +583,13 @@ def book_slot(sender, slot, symptoms):
         notify_agent(
             sender,
             (
-                f"📅 *{slot['date']} à {slot['time']}*\n"
-                f"Patient #{patient_id}\n\n"
-                f"📋 Résumé consultation:\n"
-                f"{symptoms}\n\n"
-                f"📞 Appelez ce patient sur WhatsApp à l'heure du RDV"
+                f"🕐 *{slot['time']}* le *{slot['date']}*\n"
+                f"👤 Patient *#{patient_id}*\n\n"
+                f"📋 *Résumé:*\n"
+                f"_{symptoms}_\n\n"
+                f"📞 Appelez #{patient_id} sur WhatsApp\n"
+                f"    à *{slot['time']}*\n"
+                f"✅ Répondez *TRAITÉ {patient_id}* après l'appel"
             ),
             triage_level="YELLOW"
         )
@@ -622,24 +627,30 @@ def send_queue_to_doctor():
         appointments = supabase.table("appointments")\
             .select("*")\
             .eq("date", str(date.today()))\
-            .eq("status", "confirmed")\
             .order("time")\
             .execute()\
             .data
+        msg  = f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"📋 *FILE DU JOUR — {INSTITUTION_NAME}*\n"
+        msg += f"📅 *{date.today().strftime('%A %d %B %Y')}*\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         if not appointments:
-            print("📋 Aucun RDV aujourd'hui")
-            return
-        msg = f"📋 *FILE D'ATTENTE — {INSTITUTION_NAME}*\n"
-        msg += f"{'━'*25}\n\n"
-        msg += f"📅 {date.today().strftime('%d/%m/%Y')}\n\n"
-        for apt in appointments:
-            emoji = "🔴" if apt["triage_level"] == "RED" else "🟡"
-            patient_id = apt["session_hash"][:4].upper()
-            msg += (
-                f"{emoji} {apt['time']} — Patient #{patient_id}\n"
-                f"   {apt['symptoms'][:80]}\n\n"
-            )
-        msg += "━"*25
+            msg += "✅ Aucun RDV aujourd'hui\n"
+        else:
+            for apt in appointments:
+                emoji  = "🔴" if apt["triage_level"] == "RED" else "🟡"
+                pid    = apt["session_hash"][:4].upper()
+                status = "✅ Traité" if apt["status"] == "treated" else "⏳ En attente"
+                short  = apt["symptoms"].split("\n")[0][:55] if apt["symptoms"] else "Non précisé"
+                msg += (
+                    f"{emoji} *{apt['time']}* — #{pid}\n"
+                    f"   _{short}_\n"
+                    f"   {status}\n\n"
+                )
+            msg += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            msg += f"*Total: {len(appointments)} RDV*\n"
+            treated = sum(1 for a in appointments if a["status"] == "treated")
+            msg += f"✅ Traités: {treated} | ⏳ Restants: {len(appointments)-treated}"
         recipients = set()
         if AGENT_NUMBER:
             recipients.add(AGENT_NUMBER)
@@ -659,11 +670,13 @@ def send_queue_to_doctor():
         print(f"❌ Queue error: {e}")
 
 def send_appointment_reminders():
-    """Envoie un rappel WhatsApp 30 min avant chaque RDV."""
+    """Rappel 30 min avant chaque RDV — agent + médecin."""
     try:
         from datetime import datetime
-        now = datetime.now()
-        reminder_time = (now + timedelta(minutes=30)).strftime("%H:%M")
+        now = datetime.utcnow()
+        future = now + timedelta(minutes=30)
+        future_time = f"{future.hour}h{future.minute:02d}"
+        future_time_alt = f"{future.hour}h{future.minute if future.minute else '00'}"
         appointments = supabase.table("appointments")\
             .select("*")\
             .eq("date", str(date.today()))\
@@ -671,18 +684,78 @@ def send_appointment_reminders():
             .execute()\
             .data
         for apt in appointments:
-            apt_time = apt["time"].replace("h", ":").zfill(5)
-            if apt_time == reminder_time:
-                print(f"⏰ Rappel dû pour {apt['session_hash'][:4]} à {apt['time']}")
-                notify_agent(
-                    "system",
-                    f"⏰ Rappel: RDV dans 30 min\n"
-                    f"Patient #{apt['session_hash'][:4].upper()}\n"
-                    f"Symptômes: {apt['symptoms'][:80]}",
-                    triage_level="YELLOW"
+            apt_time = apt["time"].strip()
+            if apt_time in [future_time, future_time_alt]:
+                pid = apt["session_hash"][:4].upper()
+                symptoms_short = apt["symptoms"].split("\n")[0][:60] if apt["symptoms"] else "Non précisé"
+                reminder_msg = (
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"⏰ *RAPPEL RDV dans 30 min*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"🕐 *{apt['time']}* — Patient *#{pid}*\n"
+                    f"_{symptoms_short}_\n\n"
+                    f"📞 Préparez-vous à appeler #{pid}\n"
+                    f"✅ Répondez *TRAITÉ {pid}* après l'appel\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━"
                 )
+                recipients = set()
+                if AGENT_NUMBER:
+                    recipients.add(AGENT_NUMBER)
+                for num in DOCTOR_NUMBERS:
+                    recipients.add(f"whatsapp:{num}")
+                for recipient in recipients:
+                    try:
+                        twilio_client.messages.create(
+                            from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+                            to=recipient,
+                            body=reminder_msg
+                        )
+                        print(f"⏰ Rappel envoyé à {recipient} pour {apt['time']}")
+                    except Exception as e:
+                        print(f"❌ Rappel error {recipient}: {e}")
     except Exception as e:
         print(f"❌ Reminder error: {e}")
+
+def send_evening_reminders():
+    """Rappel J-1 soir à 20h — RDV du lendemain."""
+    try:
+        tomorrow = str(date.today() + timedelta(days=1))
+        appointments = supabase.table("appointments")\
+            .select("*")\
+            .eq("date", tomorrow)\
+            .eq("status", "confirmed")\
+            .order("time")\
+            .execute()\
+            .data
+        if not appointments:
+            return
+        msg  = f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"📅 *RDV DE DEMAIN — {INSTITUTION_NAME}*\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for apt in appointments:
+            pid = apt["session_hash"][:4].upper()
+            short = apt["symptoms"].split("\n")[0][:55] if apt["symptoms"] else "Non précisé"
+            msg += f"🟡 *{apt['time']}* — #{pid}\n"
+            msg += f"   _{short}_\n\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"*Total demain: {len(appointments)} RDV*"
+        recipients = set()
+        if AGENT_NUMBER:
+            recipients.add(AGENT_NUMBER)
+        for num in DOCTOR_NUMBERS:
+            recipients.add(f"whatsapp:{num}")
+        for recipient in recipients:
+            try:
+                twilio_client.messages.create(
+                    from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+                    to=recipient,
+                    body=msg
+                )
+                print(f"🌙 Rappel J-1 envoyé à {recipient}")
+            except Exception as e:
+                print(f"❌ Evening reminder error: {e}")
+    except Exception as e:
+        print(f"❌ Evening reminder error: {e}")
 
 def is_booking_trigger(message):
     triggers = [
@@ -1076,6 +1149,30 @@ def webhook():
         r.message(HANDOFF_RESPONSE)
         return str(r)
 
+    # ── Commande AIDE — guide médecin/agent ─────────────────
+    if incoming_text.upper().strip() == "AIDE" and (is_doctor(sender) or sender == AGENT_NUMBER):
+        guide = (
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📖 *GUIDE {INSTITUTION_NAME}*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📅 *Gérer vos créneaux:*\n"
+            "• `DISPO demain 9h 10h 11h30 14h`\n"
+            "• `DISPO aujourd'hui 16h 17h`\n"
+            "• `ANNULER 10h`\n\n"
+            "📋 *Voir l'agenda:*\n"
+            "• `FILE` → liste du jour\n\n"
+            "✅ *Après chaque appel:*\n"
+            "• `TRAITÉ XXXX`\n\n"
+            "🆘 *Vous recevez auto:*\n"
+            "• 🆕 Nouveau RDV + résumé\n"
+            "• 🚨 Urgences immédiates\n"
+            "• 📋 File à 8h chaque matin\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        r = MessagingResponse()
+        r.message(guide)
+        return str(r)
+
     # ── Layer 2b: Demande agent direct ─────────────────────
     if is_agent_request(incoming_text):
         print("👤 Agent request direct")
@@ -1215,6 +1312,7 @@ def webhook():
 
 def run_schedule():
     schedule.every().day.at("12:00").do(send_queue_to_doctor)
+    schedule.every().day.at("00:00").do(send_evening_reminders)
     schedule.every(1).minutes.do(send_appointment_reminders)
     while True:
         schedule.run_pending()
