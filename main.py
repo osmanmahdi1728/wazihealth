@@ -370,6 +370,7 @@ TEMPLATE_PROFIL_SID    = os.environ.get("TEMPLATE_PROFIL_SID", "")
 TEMPLATE_SYMPTOMES_SID = os.environ.get("TEMPLATE_SYMPTOMES_SID", "")
 TEMPLATE_FEEDBACK_SID  = os.environ.get("TEMPLATE_FEEDBACK_SID", "")
 TEMPLATE_RDV_SID       = os.environ.get("TEMPLATE_RDV_SID", "")
+TEMPLATE_SIGNES_SID    = os.environ.get("TEMPLATE_SIGNES_SID", "")
 
 # ── Booking config ─────────────────────────────────────────
 # Heures viennent dynamiquement de Supabase (slots table)
@@ -450,6 +451,15 @@ FEEDBACK_BUTTON_MAP = {
     "non":  "3",
 }
 
+SIGNS_ID_MAP = {
+    "frissons": "1",
+    "sueurs":   "2",
+    "mal_tete": "3",
+    "yeux":     "4",
+    "urine":    "5",
+    "aucun":    "6",
+}
+
 
 def send_template(to, template_sid, variables=None):
     """Envoie un template WhatsApp interactif via Twilio."""
@@ -484,6 +494,8 @@ def normalize_response(req):
         return FEEDBACK_BUTTON_MAP[button]
     if list_id and list_id in SYMPTOM_ID_MAP:
         return SYMPTOM_ID_MAP[list_id]
+    if list_id and list_id in SIGNS_ID_MAP:
+        return SIGNS_ID_MAP[list_id]
     if list_id and list_id.startswith("slot_"):
         return list_id
     if button:
@@ -639,8 +651,13 @@ def is_handoff_request(sender, message):
     return "répondez oui ou non" in last
 
 def is_profile_response(sender, message):
-    """Détecte si le message est une réponse au profil 1/2/3/4."""
-    if message.strip() not in ["1", "2", "3", "4"]:
+    """Détecte si le message est une réponse au profil."""
+    profile_responses = [
+        "1", "2", "3", "4",
+        "adulte", "enfant", "âgé", "age", "autre",
+        "adulte 18-60 ans", "enfant 2-17 ans", "autre profil"
+    ]
+    if message.strip().lower() not in profile_responses:
         return False
     if sender not in conversations or not conversations[sender]:
         return False
@@ -649,11 +666,22 @@ def is_profile_response(sender, message):
          if m.get("role") == "assistant"),
         ""
     )
-    return (
-        "qui consulte" in last or
-        "mode patient" in last or
-        ("bonjour" in last and "adulte" in last)
+    return "qui consulte" in last or "mode patient activé" in last
+
+
+def is_symptom_response(sender, message):
+    """Détecte si le message est une réponse au symptôme."""
+    symptom_responses = ["1", "2", "3", "4", "5", "6", "7", "8"]
+    if message.strip() not in symptom_responses:
+        return False
+    if sender not in conversations or not conversations[sender]:
+        return False
+    last = next(
+        (m["content"].lower() for m in reversed(conversations[sender])
+         if m.get("role") == "assistant"),
+        ""
     )
+    return "qu'est-ce qui ne va pas" in last or "symptome" in last
 
 
 def is_feedback(sender, message):
@@ -1791,6 +1819,40 @@ def webhook():
         if not sent:
             r = MessagingResponse()
             r.message(symptom_msg)
+            return str(r)
+        return ("", 204)
+
+    # ── Layer 2f: Symptôme → envoie template signes ────────
+    if is_symptom_response(sender, incoming_text):
+        conversations[sender].append({
+            "role": "user",
+            "content": incoming_text
+        })
+        signs_msg = (
+            "Avez-vous aussi ces symptômes?\n\n"
+            "1️⃣ Frissons ou tremblements\n"
+            "2️⃣ Sueurs importantes\n"
+            "3️⃣ Mal de tête fort\n"
+            "4️⃣ Yeux qui jaunissent\n"
+            "5️⃣ Urine très foncée\n"
+            "6️⃣ Aucun de ces signes"
+        )
+        conversations[sender].append({
+            "role": "assistant",
+            "content": signs_msg
+        })
+        variables = {
+            "1": "Frissons ou tremblements",
+            "2": "Sueurs importantes",
+            "3": "Mal de tête fort",
+            "4": "Yeux qui jaunissent",
+            "5": "Urine très foncée",
+            "6": "Aucun de ces signes"
+        }
+        sent = send_template(sender, TEMPLATE_SIGNES_SID, variables)
+        if not sent:
+            r = MessagingResponse()
+            r.message(signs_msg)
             return str(r)
         return ("", 204)
 
