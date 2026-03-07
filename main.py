@@ -583,13 +583,11 @@ def book_slot(sender, slot, symptoms):
         notify_agent(
             sender,
             (
-                f"🕐 *{slot['time']}* le *{slot['date']}*\n"
-                f"👤 Patient *#{patient_id}*\n\n"
-                f"📋 *Résumé:*\n"
-                f"_{symptoms}_\n\n"
-                f"📞 Appelez #{patient_id} sur WhatsApp\n"
-                f"    à *{slot['time']}*\n"
-                f"✅ Répondez *TRAITÉ {patient_id}* après l'appel"
+                f"*{slot['date']} — {slot['time']}*\n"
+                f"👤 #{patient_id}\n\n"
+                f"📋 _{symptoms}_\n\n"
+                f"📞 Appelez *#{patient_id}* à *{slot['time']}*\n"
+                f"✅ *TRAITÉ {patient_id}* après l'appel"
             ),
             triage_level="YELLOW"
         )
@@ -642,24 +640,31 @@ def parse_doctor_availability(message):
     if not target_dates:
         return "❌ Format non reconnu.\nExemples:\n• DISPO demain 9h 10h 14h\n• DISPO semaine 9h 14h\n• DISPO lundi 10h 11h"
 
-    raw_times = re.findall(r'\d{1,2}h\d{0,2}', msg)
-    if not raw_times:
-        return "❌ Aucune heure trouvée.\nExemple: DISPO demain 9h 10h 14h"
+    range_match = re.search(r'(\d{1,2})h?\s*[àa\-]\s*(\d{1,2})h', msg)
+    if range_match:
+        start_h = int(range_match.group(1))
+        end_h   = int(range_match.group(2))
+        h, m = start_h, 0
+        while (h < end_h) or (h == end_h and m == 0):
+            slots_to_create.append(f"{h}h{m:02d}")
+            m += 30
+            if m >= 60:
+                m = 0
+                h += 1
+    else:
+        raw_times = re.findall(r'\d{1,2}h\d{0,2}', msg)
+        for t in raw_times:
+            parts = t.replace("h", ":").split(":")
+            hh = int(parts[0])
+            mm = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+            slots_to_create.append(f"{hh}h{mm:02d}")
+            mm2 = mm + 30
+            hh2 = hh + mm2 // 60
+            mm2 = mm2 % 60
+            slots_to_create.append(f"{hh2}h{mm2:02d}")
 
-    def parse_time(t):
-        parts = t.replace("h", ":").split(":")
-        h = int(parts[0])
-        m = int(parts[1]) if len(parts) > 1 and parts[1] else 0
-        return h, m
-
-    def format_slot(h, m):
-        return f"{h}h{m:02d}"
-
-    for t in raw_times:
-        h, m = parse_time(t)
-        slots_to_create.append(format_slot(h, m))
-        m2, h2 = (m + 30) % 60, h + (m + 30) // 60
-        slots_to_create.append(format_slot(h2, m2))
+    if not slots_to_create:
+        return "❌ Aucune heure trouvée.\nExemple: DISPO demain 9h 10h 14h\nOU: DISPO semaine 9h à 12h"
 
     count = 0
     for target_date in target_dates:
@@ -728,6 +733,8 @@ Exemples:
 "je suis libre lundi matin"           → dispo
 "annule le 10h"                       → annuler
 "montre moi mes rendez vous"          → file
+"mes prochains patients"              → file
+"agenda de la semaine"                → file
 "j'ai appelé le patient A3F2"         → traite
 "je veux un rdv"                      → booking
 "parler à quelqu'un"                  → agent
@@ -751,8 +758,11 @@ Exemples:
         return {"intent": "patient", "params": {}}
 
 
-def send_queue_to_doctor():
-    """Envoie la file d'attente au médecin ET à l'agent."""
+def send_queue_to_doctor(requester=None):
+    """
+    Si requester fourni → envoie seulement à lui.
+    Si requester None → envoie à tous (appel automatique 8h).
+    """
     try:
         appointments = supabase.table("appointments")\
             .select("*")\
@@ -760,27 +770,31 @@ def send_queue_to_doctor():
             .order("time")\
             .execute()\
             .data
-        msg  = f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        msg += f"📋 *FILE DU JOUR — {INSTITUTION_NAME}*\n"
-        msg += f"📅 *{date.today().strftime('%A %d %B %Y')}*\n"
-        msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
         if not appointments:
-            msg += "✅ Aucun RDV aujourd'hui\n"
+            msg = "📋 Aucun RDV aujourd'hui ✅"
         else:
+            msg  = f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            msg += f"📋 *FILE — {date.today().strftime('%d/%m')}*\n"
+            msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             for apt in appointments:
                 emoji  = "🔴" if apt["triage_level"] == "RED" else "🟡"
                 pid    = apt["session_hash"][:4].upper()
-                status = "✅ Traité" if apt["status"] == "treated" else "⏳ En attente"
-                short  = apt["symptoms"].split("\n")[0][:55] if apt["symptoms"] else "Non précisé"
-                msg += (
-                    f"{emoji} *{apt['time']}* — #{pid}\n"
-                    f"   _{short}_\n"
-                    f"   {status}\n\n"
-                )
-            msg += f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            msg += f"*Total: {len(appointments)} RDV*\n"
+                status = "✅" if apt["status"] == "treated" else "⏳"
+                short  = apt["symptoms"].split("\n")[0][:50] if apt["symptoms"] else "—"
+                msg += f"{emoji} *{apt['time']}* {status} #{pid}\n_{short}_\n\n"
             treated = sum(1 for a in appointments if a["status"] == "treated")
-            msg += f"✅ Traités: {treated} | ⏳ Restants: {len(appointments)-treated}"
+            msg += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            msg += f"*{len(appointments)} RDV — ✅{treated} ⏳{len(appointments)-treated}*"
+
+        if requester:
+            twilio_client.messages.create(
+                from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+                to=requester,
+                body=msg
+            )
+            return
+
         recipients = set()
         if AGENT_NUMBER:
             recipients.add(AGENT_NUMBER)
@@ -793,11 +807,96 @@ def send_queue_to_doctor():
                     to=recipient,
                     body=msg
                 )
-                print(f"✅ File envoyée à: {recipient}")
             except Exception as e:
-                print(f"❌ Erreur envoi {recipient}: {e}")
+                print(f"❌ Queue send error {recipient}: {e}")
     except Exception as e:
         print(f"❌ Queue error: {e}")
+
+
+def send_week_queue(requester):
+    """Envoie les RDV de la semaine complète."""
+    try:
+        today = date.today()
+        end_of_week = today + timedelta(days=7)
+        appointments = supabase.table("appointments")\
+            .select("*")\
+            .eq("status", "confirmed")\
+            .gte("date", str(today))\
+            .lte("date", str(end_of_week))\
+            .order("date")\
+            .order("time")\
+            .execute()\
+            .data
+
+        if not appointments:
+            msg = "📋 Aucun RDV cette semaine ✅"
+        else:
+            msg  = f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            msg += f"📋 *RDV DE LA SEMAINE — {INSTITUTION_NAME}*\n"
+            msg += f"📅 *{today.strftime('%d/%m')} → {end_of_week.strftime('%d/%m/%Y')}*\n"
+            msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            current_date = None
+            for apt in appointments:
+                if apt["date"] != current_date:
+                    current_date = apt["date"]
+                    msg += f"📅 *{current_date}*\n"
+                emoji = "🔴" if apt["triage_level"] == "RED" else "🟡"
+                pid = apt["session_hash"][:4].upper()
+                short = apt["symptoms"].split("\n")[0][:50] if apt["symptoms"] else "Non précisé"
+                msg += f"  {emoji} {apt['time']} — #{pid} — _{short}_\n"
+            msg += f"\n━━━━━━━━━━━━━━━━━━━━━━\n"
+            msg += f"*Total semaine: {len(appointments)} RDV*"
+
+        twilio_client.messages.create(
+            from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+            to=requester,
+            body=msg
+        )
+    except Exception as e:
+        print(f"❌ Week queue error: {e}")
+
+def send_next_24h_queue(requester):
+    """Patients dans les 24 prochaines heures."""
+    try:
+        tomorrow = str(date.today() + timedelta(days=1))
+        appointments = supabase.table("appointments")\
+            .select("*")\
+            .in_("date", [str(date.today()), tomorrow])\
+            .eq("status", "confirmed")\
+            .order("date")\
+            .order("time")\
+            .execute()\
+            .data
+
+        if not appointments:
+            msg = "📋 Aucun patient dans les 24h ✅"
+        else:
+            msg  = f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            msg += f"📋 *PROCHAINS — 24H*\n"
+            msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            current_date = None
+            for apt in appointments:
+                if apt["date"] != current_date:
+                    current_date = apt["date"]
+                    label = "Aujourd'hui" if current_date == str(date.today()) else "Demain"
+                    msg += f"📅 *{label}*\n"
+                emoji  = "🔴" if apt["triage_level"] == "RED" else "🟡"
+                pid    = apt["session_hash"][:4].upper()
+                status = "✅" if apt["status"] == "treated" else "⏳"
+                short  = apt["symptoms"].split("\n")[0][:50] if apt["symptoms"] else "—"
+                msg += f"  {emoji} *{apt['time']}* {status} #{pid}\n"
+                msg += f"  _{short}_\n\n"
+            msg += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            msg += f"*Total: {len(appointments)} patients*"
+
+        twilio_client.messages.create(
+            from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+            to=requester,
+            body=msg
+        )
+    except Exception as e:
+        print(f"❌ Next 24h error: {e}")
+
 
 def send_appointment_reminders():
     """Rappel 30 min avant chaque RDV — agent + médecin."""
@@ -818,14 +917,10 @@ def send_appointment_reminders():
                 pid = apt["session_hash"][:4].upper()
                 symptoms_short = apt["symptoms"].split("\n")[0][:60] if apt["symptoms"] else "Non précisé"
                 reminder_msg = (
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"⏰ *RAPPEL RDV dans 30 min*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"🕐 *{apt['time']}* — Patient *#{pid}*\n"
-                    f"_{symptoms_short}_\n\n"
-                    f"📞 Préparez-vous à appeler #{pid}\n"
-                    f"✅ Répondez *TRAITÉ {pid}* après l'appel\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━"
+                    f"⏰ *RAPPEL — {apt['time']}*\n"
+                    f"👤 #{pid} — _{symptoms_short}_\n\n"
+                    f"📞 Préparez l'appel\n"
+                    f"✅ *TRAITÉ {pid}* après"
                 )
                 recipients = set()
                 if AGENT_NUMBER:
@@ -1167,23 +1262,21 @@ def webhook():
         # ── Médecin ─────────────────────────────────────────
         if is_doctor(sender):
             doctor_menu = (
-                f"👨‍⚕️ *Bonjour Docteur — {INSTITUTION_NAME}*\n\n"
+                f"👨‍⚕️ *Bonjour Docteur — {INSTITUTION_NAME}*\n"
+                f"_Votre assistant de gestion des consultations._\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📅 *Gérer vos créneaux:*\n"
-                f"• DISPO demain 9h 10h 14h\n"
-                f"• DISPO semaine 9h 14h\n"
-                f"• ANNULER 10h\n\n"
-                f"📋 *Voir l'agenda:*\n"
-                f"• FILE → liste du jour\n\n"
-                f"✅ *Après chaque appel:*\n"
-                f"• TRAITÉ XXXX\n\n"
-                f"🧑 *Tester comme patient:*\n"
-                f"• PATIENT → mode patient\n\n"
-                f"🆘 *Vous recevez automatiquement:*\n"
-                f"• 🆕 Nouveaux RDV + résumé patient\n"
-                f"• 🚨 Urgences immédiates\n"
-                f"• 📋 File à 8h chaque matin\n"
-                f"• ⏰ Rappel 30 min avant chaque RDV\n"
+                f"📅 *CRÉNEAUX*\n"
+                f"• *DISPO* demain 9h à 12h\n"
+                f"• *DISPO* semaine 9h 14h\n"
+                f"• *ANNULER* 10h\n\n"
+                f"📋 *AGENDA*\n"
+                f"• *FILE* → aujourd'hui\n"
+                f"• *PROCHAIN* → 24 prochaines heures\n"
+                f"• *AGENDA* → 7 prochains jours\n\n"
+                f"✅ *APRÈS APPEL*\n"
+                f"• *TRAITÉ* XXXX\n\n"
+                f"🧑 *MODE TEST*\n"
+                f"• *PATIENT* → triage patient\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
             r = MessagingResponse()
@@ -1194,16 +1287,20 @@ def webhook():
         sender_clean = sender.replace("whatsapp:", "")
         if AGENT_NUMBER and sender_clean in AGENT_NUMBER:
             agent_menu = (
-                f"👤 *Bonjour — Agent {INSTITUTION_NAME}*\n\n"
+                f"👤 *Bonjour — Agent {INSTITUTION_NAME}*\n"
+                f"_Supervision des consultations et urgences._\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📋 *Commandes disponibles:*\n"
-                f"• `FILE` → file d'attente du jour\n"
-                f"• `TRAITÉ XXXX` → marquer traité\n\n"
-                f"🆘 *Vous recevez automatiquement:*\n"
-                f"• 🆕 Nouveaux RDV + résumé\n"
+                f"📋 *AGENDA*\n"
+                f"• *FILE* → aujourd'hui\n"
+                f"• *PROCHAIN* → 24 prochaines heures\n"
+                f"• *AGENDA* → 7 prochains jours\n\n"
+                f"✅ *APRÈS APPEL*\n"
+                f"• *TRAITÉ* XXXX\n\n"
+                f"🔔 *AUTO*\n"
+                f"• 🆕 Nouveau RDV + résumé\n"
                 f"• 🚨 Urgences immédiates\n"
-                f"• 📋 File à 8h chaque matin\n"
-                f"• ⏰ Rappels 30 min avant RDV\n"
+                f"• 📋 File à 8h\n"
+                f"• ⏰ Rappel 30 min avant RDV\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
             r = MessagingResponse()
@@ -1212,17 +1309,17 @@ def webhook():
 
         # ── Patient ──────────────────────────────────────────
         profile_question = (
-            f"👋 Bonjour! Je suis l'assistant de {INSTITUTION_NAME} 🏥\n\n"
-            "Je peux vous aider à:\n"
-            "• 🤒 Comprendre vos symptômes\n"
-            "• 💊 Savoir quoi faire en attendant le médecin\n"
-            "• 🏥 Trouver une pharmacie ou un hôpital proche\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Qui consulte aujourd'hui?\n\n"
-            "1️⃣ Adulte (18-60 ans) — bonne santé générale\n"
-            "2️⃣ Enfant (2-17 ans)\n"
-            "3️⃣ Personne âgée (60 ans et plus)\n"
-            "4️⃣ Autre profil (enceinte, maladie chronique...)"
+            f"👋 *{INSTITUTION_NAME}* 🏥\n\n"
+            f"• 🤒 Comprendre vos symptômes\n"
+            f"• 💊 Conseils avant le médecin\n"
+            f"• 📅 Prendre un rendez-vous\n"
+            f"• 🏥 Trouver une pharmacie\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"*Qui consulte?*\n\n"
+            f"1️⃣ Adulte (18-60 ans)\n"
+            f"2️⃣ Enfant (2-17 ans)\n"
+            f"3️⃣ Personne âgée (60+)\n"
+            f"4️⃣ Autre profil"
         )
         if sender not in conversations:
             conversations[sender] = []
@@ -1246,13 +1343,18 @@ def webhook():
             doctor_menu = (
                 f"👨‍⚕️ *Session réinitialisée — {INSTITUTION_NAME}*\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📅 *Disponibilités:*\n"
-                f"• DISPO demain 9h 10h 14h\n"
-                f"• DISPO semaine 9h 14h\n"
-                f"• ANNULER 10h\n\n"
-                f"📋 *Agenda:* FILE\n\n"
-                f"✅ *Après appel:* TRAITÉ XXXX\n\n"
-                f"🧑 *Tester comme patient:* PATIENT\n"
+                f"📅 *CRÉNEAUX*\n"
+                f"• *DISPO* demain 9h à 12h\n"
+                f"• *DISPO* semaine 9h 14h\n"
+                f"• *ANNULER* 10h\n\n"
+                f"📋 *AGENDA*\n"
+                f"• *FILE* → aujourd'hui\n"
+                f"• *PROCHAIN* → 24 prochaines heures\n"
+                f"• *AGENDA* → 7 prochains jours\n\n"
+                f"✅ *APRÈS APPEL*\n"
+                f"• *TRAITÉ* XXXX\n\n"
+                f"🧑 *MODE TEST*\n"
+                f"• *PATIENT* → triage patient\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
             r = MessagingResponse()
@@ -1264,8 +1366,12 @@ def webhook():
             agent_menu = (
                 f"👤 *Session réinitialisée — Agent {INSTITUTION_NAME}*\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📋 *Agenda:* FILE\n"
-                f"✅ *Après appel:* TRAITÉ XXXX\n"
+                f"📋 *AGENDA*\n"
+                f"• *FILE* → aujourd'hui\n"
+                f"• *PROCHAIN* → 24 prochaines heures\n"
+                f"• *AGENDA* → 7 prochains jours\n\n"
+                f"✅ *APRÈS APPEL*\n"
+                f"• *TRAITÉ* XXXX\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
             r = MessagingResponse()
@@ -1273,17 +1379,17 @@ def webhook():
             return str(r)
 
         profile_question = (
-            f"👋 Bonjour! Je suis l'assistant de {INSTITUTION_NAME} 🏥\n\n"
-            "Je peux vous aider à:\n"
-            "• 🤒 Comprendre vos symptômes\n"
-            "• 💊 Savoir quoi faire en attendant le médecin\n"
-            "• 🏥 Trouver une pharmacie ou un hôpital proche\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Qui consulte aujourd'hui?\n\n"
-            "1️⃣ Adulte (18-60 ans) — bonne santé générale\n"
-            "2️⃣ Enfant (2-17 ans)\n"
-            "3️⃣ Personne âgée (60 ans et plus)\n"
-            "4️⃣ Autre profil (enceinte, maladie chronique...)"
+            f"👋 *{INSTITUTION_NAME}* 🏥\n\n"
+            f"• 🤒 Comprendre vos symptômes\n"
+            f"• 💊 Conseils avant le médecin\n"
+            f"• 📅 Prendre un rendez-vous\n"
+            f"• 🏥 Trouver une pharmacie\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"*Qui consulte?*\n\n"
+            f"1️⃣ Adulte (18-60 ans)\n"
+            f"2️⃣ Enfant (2-17 ans)\n"
+            f"3️⃣ Personne âgée (60+)\n"
+            f"4️⃣ Autre profil"
         )
         conversations[sender] = [{"role": "assistant", "content": profile_question}]
         r = MessagingResponse()
@@ -1343,9 +1449,19 @@ def webhook():
             return str(r)
 
         if action == "file":
-            send_queue_to_doctor()
-            r = MessagingResponse()
-            r.message("📋 File d'attente envoyée!")
+            low = incoming_text.lower()
+            if any(w in low for w in ["agenda", "semaine", "7 jour"]):
+                send_week_queue(requester=sender)
+                r = MessagingResponse()
+                r.message("📋 Agenda de la semaine envoyé!")
+            elif any(w in low for w in ["prochain", "24h", "demain"]):
+                send_next_24h_queue(requester=sender)
+                r = MessagingResponse()
+                r.message("📋 Prochains patients (24h) envoyés!")
+            else:
+                send_queue_to_doctor(requester=sender)
+                r = MessagingResponse()
+                r.message("📋 File d'aujourd'hui envoyée!")
             return str(r)
 
         if action == "traite":
@@ -1370,15 +1486,19 @@ def webhook():
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📖 *GUIDE {INSTITUTION_NAME}*\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"📅 *Disponibilités:*\n"
-                f"• DISPO demain 9h 10h 14h\n"
-                f"• DISPO semaine 9h 14h\n"
-                f"• DISPO lundi 10h 11h\n"
-                f"• ANNULER 10h\n\n"
-                f"📋 *Agenda:*\n"
-                f"• FILE → liste du jour\n\n"
-                f"✅ *Après appel:*\n"
-                f"• TRAITÉ XXXX\n"
+                f"📅 *CRÉNEAUX*\n"
+                f"• *DISPO* demain 9h à 12h\n"
+                f"• *DISPO* semaine 9h 14h\n"
+                f"• *DISPO* lundi 10h 11h\n"
+                f"• *ANNULER* 10h\n\n"
+                f"📋 *AGENDA*\n"
+                f"• *FILE* → aujourd'hui\n"
+                f"• *PROCHAIN* → 24 prochaines heures\n"
+                f"• *AGENDA* → 7 prochains jours\n\n"
+                f"✅ *APRÈS APPEL*\n"
+                f"• *TRAITÉ* XXXX\n\n"
+                f"🧑 *MODE TEST*\n"
+                f"• *PATIENT* → triage patient\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━"
             )
             r = MessagingResponse()
