@@ -1035,6 +1035,50 @@ def webhook():
     # ── Message vide OU salutation ───────────────────────────
     GREETINGS = ["bonjour", "bonsoir", "salut", "hello", "hi", "allo", "allô", "salam"]
     if not incoming_text or incoming_text.lower().strip() in GREETINGS:
+        # ── Médecin ─────────────────────────────────────────
+        if is_doctor(sender):
+            doctor_menu = (
+                f"👨‍⚕️ *Bonjour Docteur — {INSTITUTION_NAME}*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📅 *Gérer vos créneaux:*\n"
+                f"• `DISPO demain 9h 10h 14h`\n"
+                f"• `ANNULER 10h`\n\n"
+                f"📋 *Voir l'agenda:*\n"
+                f"• `FILE` → liste du jour\n\n"
+                f"✅ *Après chaque appel:*\n"
+                f"• `TRAITÉ XXXX`\n\n"
+                f"🆘 *Vous recevez automatiquement:*\n"
+                f"• 🆕 Nouveaux RDV + résumé patient\n"
+                f"• 🚨 Urgences immédiates\n"
+                f"• 📋 File à 8h chaque matin\n"
+                f"• ⏰ Rappel 30 min avant chaque RDV\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            r = MessagingResponse()
+            r.message(doctor_menu)
+            return str(r)
+
+        # ── Agent ────────────────────────────────────────────
+        sender_clean = sender.replace("whatsapp:", "")
+        if AGENT_NUMBER and sender_clean in AGENT_NUMBER:
+            agent_menu = (
+                f"👤 *Bonjour — Agent {INSTITUTION_NAME}*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📋 *Commandes disponibles:*\n"
+                f"• `FILE` → file d'attente du jour\n"
+                f"• `TRAITÉ XXXX` → marquer traité\n\n"
+                f"🆘 *Vous recevez automatiquement:*\n"
+                f"• 🆕 Nouveaux RDV + résumé\n"
+                f"• 🚨 Urgences immédiates\n"
+                f"• 📋 File à 8h chaque matin\n"
+                f"• ⏰ Rappels 30 min avant RDV\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            r = MessagingResponse()
+            r.message(agent_menu)
+            return str(r)
+
+        # ── Patient ──────────────────────────────────────────
         profile_question = (
             f"👋 Bonjour! Je suis l'assistant de {INSTITUTION_NAME} 🏥\n\n"
             "Je peux vous aider à:\n"
