@@ -365,6 +365,12 @@ RESOURCES = {
 
 FEEDBACK_CHOICES = {"1": "utile", "2": "partiel", "3": "non_utile"}
 
+# ── Template SIDs (depuis Render) ─────────────────────────
+TEMPLATE_PROFIL_SID    = os.environ.get("TEMPLATE_PROFIL_SID", "")
+TEMPLATE_SYMPTOMES_SID = os.environ.get("TEMPLATE_SYMPTOMES_SID", "")
+TEMPLATE_FEEDBACK_SID  = os.environ.get("TEMPLATE_FEEDBACK_SID", "")
+TEMPLATE_RDV_SID       = os.environ.get("TEMPLATE_RDV_SID", "")
+
 # ── Booking config ─────────────────────────────────────────
 # Heures viennent dynamiquement de Supabase (slots table)
 
@@ -420,6 +426,116 @@ def send_welcome_audio(sender):
             print(f"❌ Welcome send error: {e}")
     t = threading.Thread(target=_send, daemon=True)
     t.start()
+
+# ── Mapping List/Button IDs → numéros existants ───────────
+SYMPTOM_ID_MAP = {
+    "fievre_today": "1",
+    "fievre_2j":    "2",
+    "douleur":      "3",
+    "toux":         "4",
+    "digestif":     "5",
+    "peau":         "6",
+    "fatigue":      "7",
+    "autre":        "8",
+}
+
+PROFILE_BUTTON_MAP = {
+    "adulte 18-60 ans": "1",
+    "enfant 2-17 ans":  "2",
+    "autre profil":     "3",
+}
+
+FEEDBACK_BUTTON_MAP = {
+    "oui":  "1",
+    "non":  "3",
+}
+
+
+def send_template(to, template_sid, variables=None):
+    """Envoie un template WhatsApp interactif via Twilio."""
+    if not template_sid:
+        return False
+    try:
+        twilio_client.messages.create(
+            from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+            to=to,
+            content_sid=template_sid,
+            content_variables=json.dumps(variables or {"1": " "})
+        )
+        print(f"✅ Template envoyé: {template_sid}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Template error (fallback texte): {e}")
+        return False
+
+
+def normalize_response(req):
+    """
+    Normalise la réponse vers le format texte existant.
+    Gère: bouton Quick Reply / List Message / texte libre.
+    """
+    button  = req.form.get("ButtonPayload", "").strip().lower()
+    list_id = req.form.get("ListId", "").strip().lower()
+    text    = req.form.get("Body", "").strip()
+
+    if button and button in PROFILE_BUTTON_MAP:
+        return PROFILE_BUTTON_MAP[button]
+    if button and button in FEEDBACK_BUTTON_MAP:
+        return FEEDBACK_BUTTON_MAP[button]
+    if list_id and list_id in SYMPTOM_ID_MAP:
+        return SYMPTOM_ID_MAP[list_id]
+    if list_id and list_id.startswith("slot_"):
+        return list_id
+    if button:
+        return button
+    return text
+
+
+def send_booking_list(sender):
+    """
+    Envoie un List Message dynamique avec les créneaux Supabase.
+    Les créneaux sont injectés comme variables {{1}} {{2}}...
+    Fallback texte si template non configuré ou erreur.
+    """
+    slots = get_available_slots()
+    if not slots:
+        twilio_client.messages.create(
+            from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+            to=sender,
+            body=(
+                "Aucun créneau disponible pour le moment.\n\n"
+                "Le médecin vous contactera dans les 24h.\n"
+                "Nous vous notifierons dès qu'un créneau se libère."
+            )
+        )
+        return []
+
+    if TEMPLATE_RDV_SID:
+        variables = {}
+        for i, slot in enumerate(slots[:5], 1):
+            variables[str(i)] = f"{slot['date']} à {slot['time']}"
+        success = send_template(sender, TEMPLATE_RDV_SID, variables)
+        if success:
+            conversations.setdefault(sender, []).append({
+                "role":    "system",
+                "content": f"AVAILABLE_SLOTS:{json.dumps(slots[:5])}"
+            })
+            print(f"✅ List Message RDV envoyé avec {len(slots[:5])} créneaux")
+            return slots[:5]
+
+    booking_msg, fallback_slots = get_booking_start_message()
+    twilio_client.messages.create(
+        from_=os.environ.get("TWILIO_WHATSAPP_NUMBER"),
+        to=sender,
+        body=booking_msg
+    )
+    if fallback_slots:
+        conversations.setdefault(sender, []).append({
+            "role":    "system",
+            "content": f"AVAILABLE_SLOTS:{json.dumps(fallback_slots)}"
+        })
+    return fallback_slots or []
+
 
 def notify_agent(sender, summary, triage_level="RED"):
     """Notifie l'agent/médecin avec le bon niveau."""
@@ -1221,7 +1337,7 @@ def home():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     sender        = request.form.get("From", "")
-    incoming_text = request.form.get("Body", "").strip()
+    incoming_text = normalize_response(request)
     num_media     = int(request.form.get("NumMedia", 0))
     is_audio      = False
 
@@ -1310,16 +1426,14 @@ def webhook():
         # ── Patient ──────────────────────────────────────────
         profile_question = (
             f"👋 *{INSTITUTION_NAME}* 🏥\n\n"
-            f"• 🤒 Comprendre vos symptômes\n"
-            f"• 💊 Conseils avant le médecin\n"
-            f"• 📅 Prendre un rendez-vous\n"
-            f"• 🏥 Trouver une pharmacie\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"*Qui consulte?*\n\n"
+            f"Je peux vous aider à:\n"
+            f"• Comprendre vos symptômes\n"
+            f"• Conseils avant le médecin\n"
+            f"• Prendre un rendez-vous\n\n"
+            f"Qui consulte aujourd'hui?\n\n"
             f"1️⃣ Adulte (18-60 ans)\n"
             f"2️⃣ Enfant (2-17 ans)\n"
-            f"3️⃣ Personne âgée (60+)\n"
-            f"4️⃣ Autre profil"
+            f"3️⃣ Autre profil"
         )
         if sender not in conversations:
             conversations[sender] = []
@@ -1327,10 +1441,15 @@ def webhook():
             "role": "assistant",
             "content": profile_question
         })
-        r = MessagingResponse()
-        r.message(profile_question)
+
+        sent = send_template(sender, TEMPLATE_PROFIL_SID)
+        if not sent:
+            r = MessagingResponse()
+            r.message(profile_question)
+            send_welcome_audio(sender)
+            return str(r)
         send_welcome_audio(sender)
-        return str(r)
+        return ("", 204)
 
     print(f"📩 {hash_sender(sender)}: {incoming_text}")
     log_to_db(sender, "user", incoming_text)
@@ -1549,16 +1668,50 @@ def webhook():
 
     # ── Layer 2c: Booking trigger ──────────────────────────
     if is_booking_trigger(incoming_text):
-        r = MessagingResponse()
-        slot_msg, slots = get_booking_start_message()
-        if slots:
-            conversations[sender].append({"role": "system", "content": "BOOKING_SLOTS:" + ",".join(s["id"] for s in slots)})
-        conversations[sender].append({"role": "assistant", "content": slot_msg})
-        r.message(slot_msg)
+        send_booking_list(sender)
         log_to_db(sender, "assistant", "booking_menu", triage_level="BOOKING")
+        return ("", 204)
+
+    # ── Layer 2d-1: Booking — sélection via List Message ─────
+    list_id = request.form.get("ListId", "").strip()
+    if list_id.startswith("slot_"):
+        try:
+            idx = int(list_id.replace("slot_", "")) - 1
+            slots_data = next(
+                (m["content"].replace("AVAILABLE_SLOTS:", "")
+                 for m in reversed(conversations.get(sender, []))
+                 if m.get("content", "").startswith("AVAILABLE_SLOTS:")),
+                None
+            )
+            if not slots_data:
+                raise ValueError("Slots expirés")
+            slots = json.loads(slots_data)
+            if idx < 0 or idx >= len(slots):
+                raise ValueError("Index invalide")
+            slot     = slots[idx]
+            symptoms = get_symptoms_summary(sender)
+            success  = book_slot(sender, slot, symptoms)
+            confirmation = (
+                f"✅ *RDV confirmé!*\n\n"
+                f"📅 {slot['date']} à {slot['time']}\n"
+                f"📞 Le médecin vous appellera sur WhatsApp\n\n"
+                f"Prenez soin de vous 💚"
+            ) if success else (
+                "Ce créneau n'est plus disponible.\n"
+                "Répondez RENDEZ-VOUS pour voir les autres."
+            )
+        except Exception as e:
+            print(f"❌ Slot selection error: {e}")
+            confirmation = (
+                "Session expirée.\n"
+                "Répondez RENDEZ-VOUS pour recommencer."
+            )
+        r = MessagingResponse()
+        r.message(confirmation)
+        conversations.pop(sender, None)
         return str(r)
 
-    # ── Layer 2d: Booking — sélection du créneau ────────────
+    # ── Layer 2d-2: Booking — sélection via numéro texte ───
     if is_booking_slot_selection(sender, incoming_text):
         choice = incoming_text.strip()
         stored_slots = None
@@ -1635,8 +1788,12 @@ def webhook():
                 "content": agent_question
             })
         else:
-            r.message("Merci! 🙏 Prenez soin de vous 💚")
+            sent = send_template(sender, TEMPLATE_FEEDBACK_SID)
+            if not sent:
+                r.message("Merci! 🙏 Prenez soin de vous 💚")
             conversations.pop(sender, None)
+            if sent:
+                return ("", 204)
         return str(r)
 
     # ── Layer 4: Triage AI ──────────────────────────────────
