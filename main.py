@@ -143,6 +143,7 @@ DIAGNOSTIC FINAL — FORMAT PAR NIVEAU
 💊 Pharmacie: https://maps.google.com/?q=pharmacie
 🏥 Hôpital si besoin: https://maps.google.com/?q=hopital
 📚 En savoir plus — Répondez INFO
+📅 Voir un médecin quand même — Répondez RENDEZ-VOUS
 ━━━━━━━━━━━━━━━━━━━━━━
 💬 Répondez AGENT pour parler à quelqu'un
 🙏 Cette réponse vous a-t-elle aidé? OUI ou NON
@@ -328,6 +329,7 @@ TEMPLATE_SYMPTOMES_SID = os.environ.get("TEMPLATE_SYMPTOMES_SID", "")
 TEMPLATE_FEEDBACK_SID  = os.environ.get("TEMPLATE_FEEDBACK_SID", "")
 TEMPLATE_RDV_SID       = os.environ.get("TEMPLATE_RDV_SID", "")
 TEMPLATE_SIGNES_SID    = os.environ.get("TEMPLATE_SIGNES_SID", "")
+TEMPLATE_ACCUEIL_SID   = os.environ.get("TEMPLATE_ACCUEIL_SID", "")
 
 # ── Booking config ─────────────────────────────────────────
 # Heures viennent dynamiquement de Supabase (slots table)
@@ -397,6 +399,11 @@ SYMPTOM_ID_MAP = {
     "autre":        "8",
 }
 
+WELCOME_BUTTON_MAP = {
+    "consulter": "1",
+    "trouver":   "2",
+}
+
 PROFILE_BUTTON_MAP = {
     "adulte 18-60 ans": "1",
     "enfant 2-17 ans":  "2",
@@ -445,6 +452,8 @@ def normalize_response(req):
     list_id = req.form.get("ListId", "").strip().lower()
     text    = req.form.get("Body", "").strip()
 
+    if button and button in WELCOME_BUTTON_MAP:
+        return WELCOME_BUTTON_MAP[button]
     if button and button in PROFILE_BUTTON_MAP:
         return PROFILE_BUTTON_MAP[button]
     if button and button in FEEDBACK_BUTTON_MAP:
@@ -607,8 +616,22 @@ def is_handoff_request(sender, message):
     # Handoff seulement si la dernière question demande explicitement OUI/NON
     return "répondez oui ou non" in last
 
+def is_welcome_response(sender, message):
+    """Détecte si le message est une réponse au menu d'accueil."""
+    if message.strip() not in ["1", "2"]:
+        return False
+    if sender not in conversations or not conversations[sender]:
+        return False
+    last = next(
+        (m["content"].lower() for m in reversed(conversations[sender])
+         if m.get("role") == "assistant"),
+        ""
+    )
+    return "bienvenue" in last and "consulter" in last and "trouver" in last
+
+
 def is_profile_response(sender, message):
-    """Détecte si le message est une réponse au profil."""
+    """Détecte si le message est une réponse au profil 1/2/3/4."""
     profile_responses = [
         "1", "2", "3", "4",
         "adulte", "enfant", "âgé", "age", "autre",
@@ -623,7 +646,7 @@ def is_profile_response(sender, message):
          if m.get("role") == "assistant"),
         ""
     )
-    return "qui consulte" in last or "mode patient activé" in last
+    return "qui consulte" in last
 
 
 def is_symptom_response(sender, message):
@@ -1444,28 +1467,21 @@ def webhook():
             return str(r)
 
         # ── Patient ──────────────────────────────────────────
-        profile_question = (
-            f"👋 *{INSTITUTION_NAME}* 🏥\n\n"
-            f"Je peux vous aider à:\n"
-            f"• Comprendre vos symptômes\n"
-            f"• Conseils avant le médecin\n"
-            f"• Prendre un rendez-vous\n\n"
-            f"Qui consulte aujourd'hui?\n\n"
-            f"1️⃣ Adulte (18-60 ans)\n"
-            f"2️⃣ Enfant (2-17 ans)\n"
-            f"3️⃣ Autre profil"
+        welcome_msg = (
+            f"👋 *Bienvenue chez {INSTITUTION_NAME}* 🏥\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"1️⃣ 🤒 *Consulter* — symptômes + conseil\n"
+            f"2️⃣ 📍 *Trouver* — pharmacie ou hôpital\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
         )
-        if sender not in conversations:
-            conversations[sender] = []
-        conversations[sender].append({
+        conversations[sender] = [{
             "role": "assistant",
-            "content": profile_question
-        })
-
-        sent = send_template(sender, TEMPLATE_PROFIL_SID)
+            "content": welcome_msg
+        }]
+        sent = send_template(sender, TEMPLATE_ACCUEIL_SID)
         if not sent:
             r = MessagingResponse()
-            r.message(profile_question)
+            r.message(welcome_msg)
             send_welcome_audio(sender)
             return str(r)
         send_welcome_audio(sender)
@@ -1767,6 +1783,49 @@ def webhook():
         r = MessagingResponse()
         r.message("Ce créneau n'est plus disponible. Répondez *RENDEZ-VOUS* pour voir les créneaux actuels.")
         return str(r)
+
+    # ── Layer 2e-0: Menu accueil → consulter ou maps ──────
+    if is_welcome_response(sender, incoming_text):
+        choice = incoming_text.strip()
+        conversations[sender].append({"role": "user", "content": choice})
+        if choice == "1":
+            profile_msg = (
+                "*Qui consulte aujourd'hui?*\n\n"
+                "1️⃣ Adulte (18-60 ans)\n"
+                "2️⃣ Enfant (2-17 ans)\n"
+                "3️⃣ Personne âgée (60+)\n"
+                "4️⃣ Autre profil"
+            )
+            conversations[sender].append({
+                "role": "assistant",
+                "content": profile_msg
+            })
+            sent = send_template(sender, TEMPLATE_PROFIL_SID)
+            if not sent:
+                r = MessagingResponse()
+                r.message(profile_msg)
+                return str(r)
+            return ("", 204)
+        elif choice == "2":
+            maps_msg = (
+                "📍 *Trouver près de vous:*\n\n"
+                "💊 *Pharmacie:*\n"
+                "https://maps.google.com/?q=pharmacie\n\n"
+                "🏥 *Hôpital:*\n"
+                "https://maps.google.com/?q=hopital\n\n"
+                "🚨 *Urgences:*\n"
+                "https://maps.google.com/?q=urgences+hopital\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🤒 Vous avez des symptômes?\n"
+                "Répondez *1* pour consulter"
+            )
+            conversations[sender].append({
+                "role": "assistant",
+                "content": maps_msg
+            })
+            r = MessagingResponse()
+            r.message(maps_msg)
+            return str(r)
 
     # ── Layer 2e: Profil → envoie template symptômes ───────
     if is_profile_response(sender, incoming_text):
